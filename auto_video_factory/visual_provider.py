@@ -234,8 +234,13 @@ class GeminiVideoProvider(VisualProvider):
         For a 45s video, plans ~5 scenes (each 8-9s).
         """
         # Calculate planned scenes
-        target_scene_duration = 8  # standard Omni/Veo clip target
-        scene_count = max(3, min(7, duration_seconds // target_scene_duration))
+        if quality_mode == "smoke":
+            target_scene_duration = 4  # 3-5s smoke test clip
+            scene_count = 1
+        else:
+            target_scene_duration = 8  # standard Omni/Veo clip target
+            scene_count = max(3, min(7, duration_seconds // target_scene_duration))
+
         planned_total_seconds = scene_count * target_scene_duration
 
         if planned_total_seconds > max_seconds:
@@ -286,6 +291,60 @@ class GeminiVideoProvider(VisualProvider):
             )
 
         return scenes
+
+    def generate_scene_clip(
+        self,
+        scene: ScenePlan,
+        output_path: Path,
+        api_key: str,
+    ) -> Path:
+        """
+        Generate a video clip for the given scene using Google Gemini Video API.
+        Fail-closed: If billing or permissions are not enabled, raises BillingBlockedError.
+        """
+        if not api_key:
+            raise BillingBlockedError("Missing GEMINI_API_KEY for video generation.")
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateVideos"
+        payload = {
+            "prompt": scene.prompt,
+            "aspectRatio": "9:16",
+            "durationSeconds": scene.duration_target,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Auto-Video-Factory/4.2",
+                "x-goog-api-key": api_key.strip(),
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                res_data = json.loads(resp.read().decode("utf-8"))
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                # If raw video bytes or download uri
+                video_bytes = res_data.get("video", {}).get("bytesBase64Encoded")
+                if video_bytes:
+                    import base64
+                    raw_tmp = output_path.with_suffix(".tmp.mp4")
+                    raw_tmp.write_bytes(base64.b64decode(video_bytes))
+                    self.strip_audio(raw_tmp, output_path)
+                    raw_tmp.unlink(missing_ok=True)
+                return output_path
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="ignore")
+            if e.code in (401, 403, 404) or "billing" in err_body.lower() or "permission" in err_body.lower() or "not supported" in err_body.lower():
+                raise BillingBlockedError(f"Gemini Video API blocked (HTTP {e.code}): {err_body}") from e
+            elif e.code == 429:
+                raise RuntimeError(f"Gemini API rate limit exceeded: {err_body}") from e
+            raise RuntimeError(f"Gemini Video generation failed (HTTP {e.code}): {err_body}") from e
+        except Exception as e:
+            if isinstance(e, BillingBlockedError):
+                raise
+            raise RuntimeError(f"Gemini Video connection error: {e}") from e
 
     def strip_audio(self, input_video: Path, output_video: Path) -> Path:
         """

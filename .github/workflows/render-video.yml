@@ -59,13 +59,14 @@ on:
           - pexels
           - gemini_video
       quality_mode:
-        description: "Chế độ AI Video (economy tối ưu chi phí, quality)"
+        description: "Chế độ AI Video (economy tối ưu chi phí, quality, smoke cho 1 clip 3-5s)"
         required: true
         default: economy
         type: choice
         options:
           - economy
           - quality
+          - smoke
       max_video_generation_seconds:
         description: "Giới hạn tối đa số giây AI Video sinh ra (Cost Guard)"
         required: false
@@ -233,8 +234,9 @@ jobs:
         run: |
           python - << 'PYEOF'
           import os, sys, json
+          from pathlib import Path
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
-          from auto_video_factory.visual_provider import get_visual_provider, GEMINI_VIDEO_MODEL
+          from auto_video_factory.visual_provider import get_visual_provider, GEMINI_VIDEO_MODEL, BillingBlockedError
 
           provider_name = os.environ.get("AVF_VISUAL_PROVIDER", "pexels")
           if provider_name == "gemini_video":
@@ -243,6 +245,7 @@ jobs:
               duration = int(os.environ.get("AVF_DURATION", "45"))
               quality_mode = os.environ.get("AVF_QUALITY_MODE", "economy")
               max_seconds = int(os.environ.get("AVF_MAX_GEN_SECONDS", "60"))
+              api_key = os.environ.get("GEMINI_API_KEY", "")
 
               scenes = provider.plan_scenes(
                   topic=topic,
@@ -250,9 +253,25 @@ jobs:
                   quality_mode=quality_mode,
                   max_seconds=max_seconds,
               )
-              print(f"Planned {len(scenes)} scenes for duration {duration}s using {GEMINI_VIDEO_MODEL}")
+              print(f"Planned {len(scenes)} scenes for duration {duration}s using {GEMINI_VIDEO_MODEL} (mode: {quality_mode})")
               with open("planned_scenes.json", "w", encoding="utf-8") as f:
                   json.dump([s.to_dict() for s in scenes], f, ensure_ascii=False, indent=2)
+
+              # Generate scenes (or smoke clip)
+              staged_dir = Path("storage/local_videos")
+              staged_dir.mkdir(parents=True, exist_ok=True)
+              try:
+                  for s in scenes:
+                      out_file = staged_dir / f"scene_{s.scene_id:02d}.mp4"
+                      print(f"Generating scene {s.scene_id}/{len(scenes)} ({s.duration_target}s)...")
+                      provider.generate_scene_clip(s, out_file, api_key)
+              except BillingBlockedError as e:
+                  print(f"::error::Gemini Video billing/access blocked: {e}")
+                  print("::notice::FINAL_STATUS=BLOCKED_BILLING")
+                  sys.exit(1)
+              except Exception as e:
+                  print(f"::error::Gemini Video generation failed: {e}")
+                  sys.exit(1)
           PYEOF
 
       # -------------------------------------------------------

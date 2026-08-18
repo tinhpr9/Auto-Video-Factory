@@ -161,6 +161,18 @@ class TestScenePlanner:
             assert len(s.negative_constraints) > 0
             assert "astronaut" in s.negative_constraints
 
+    def test_plan_scenes_smoke_mode(self):
+        p = GeminiVideoProvider()
+        scenes = p.plan_scenes(
+            topic="Topic",
+            duration_seconds=45,
+            quality_mode="smoke",
+            max_seconds=10,
+        )
+        assert len(scenes) == 1
+        assert scenes[0].duration_target == 4
+        assert scenes[0].scene_id == 1
+
     def test_cost_ceiling_exceeded_raises(self):
         p = GeminiVideoProvider()
         with pytest.raises(CostCeilingExceededError):
@@ -185,6 +197,29 @@ class TestVideoValidation:
         empty.write_bytes(b"")
         p = GeminiVideoProvider()
         assert not p.validate_scene_clip(empty)
+
+
+class TestGenerateSceneClip:
+    def test_generate_missing_key_raises_billing_error(self, tmp_path):
+        p = GeminiVideoProvider()
+        scene = p.plan_scenes(topic="Topic", duration_seconds=45, quality_mode="smoke", max_seconds=10)[0]
+        with pytest.raises(BillingBlockedError, match="Missing GEMINI_API_KEY"):
+            p.generate_scene_clip(scene, tmp_path / "out.mp4", "")
+
+    @patch("urllib.request.urlopen")
+    def test_generate_billing_blocked_raises(self, mock_urlopen, tmp_path):
+        error = urllib.error.HTTPError(
+            url="http://test",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=MagicMock(read=lambda: b'{"error": {"message": "Billing not enabled on project"}}'),
+        )
+        mock_urlopen.side_effect = error
+        p = GeminiVideoProvider()
+        scene = p.plan_scenes(topic="Topic", duration_seconds=45, quality_mode="smoke", max_seconds=10)[0]
+        with pytest.raises(BillingBlockedError, match="Gemini Video API blocked"):
+            p.generate_scene_clip(scene, tmp_path / "out.mp4", "valid_key")
 
 
 # ===========================================================================
