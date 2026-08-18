@@ -85,7 +85,7 @@ jobs:
         run: |
           git clone "$MPT_REPO" mpt
           cd mpt
-          git checkout b42e945b497176c823579f9b1895d9323446de23
+          git checkout "$MPT_SHA"
           echo "MPT SHA: $(git rev-parse HEAD)"
 
       # -------------------------------------------------------
@@ -96,6 +96,24 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg imagemagick
           ffmpeg -version | head -1
+
+      # -------------------------------------------------------
+      # 3.5 Validate required secrets
+      # -------------------------------------------------------
+      - name: Validate required secrets
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::Missing repository secret GEMINI_API_KEY. Please set it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          if [ -z "$PEXELS_API_KEY" ]; then
+            echo "::error::Missing repository secret PEXELS_API_KEY."
+            exit 1
+          fi
 
       # -------------------------------------------------------
       # 4. Setup Python + uv
@@ -115,6 +133,7 @@ jobs:
         working-directory: mpt
         run: |
           uv venv .venv
+          echo "$GITHUB_WORKSPACE/mpt/.venv/bin" >> $GITHUB_PATH
           uv pip install -r requirements.txt --quiet
           echo "MPT deps installed"
 
@@ -215,7 +234,7 @@ jobs:
           meta = sanitize_result_metadata({
               "status": "ok",
               "task_id": task_id,
-              "mpt_sha": "b42e945b497176c823579f9b1895d9323446de23",
+              "mpt_sha": os.environ.get("MPT_SHA", ""),
               "topic_length": len(os.environ.get("AVF_TOPIC", "")),
               "duration_input": os.environ.get("AVF_DURATION"),
               "voice": os.environ.get("AVF_VOICE"),
