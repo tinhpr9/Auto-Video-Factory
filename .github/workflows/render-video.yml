@@ -89,13 +89,22 @@ jobs:
           echo "MPT SHA: $(git rev-parse HEAD)"
 
       # -------------------------------------------------------
-      # 3. System dependencies (ffmpeg + imagemagick)
+      # 3. System dependencies (ffmpeg + imagemagick + Noto fonts)
       # -------------------------------------------------------
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick
+          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-noto-core fonts-dejavu-core
           ffmpeg -version | head -1
+          # Install Vietnamese-capable Unicode font (NotoSans-Bold.ttf) into MPT font dir
+          mkdir -p mpt/resource/fonts
+          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" | head -n 1)
+          if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
+            cp "$NOTO_FONT" mpt/resource/fonts/NotoSans-Bold.ttf
+            echo "Installed subtitle font from $NOTO_FONT to mpt/resource/fonts/NotoSans-Bold.ttf"
+          else
+            echo "::warning::NotoSans font not found in /usr/share/fonts"
+          fi
 
       # -------------------------------------------------------
       # 3.5 Validate required secrets

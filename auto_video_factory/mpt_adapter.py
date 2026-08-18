@@ -131,12 +131,20 @@ def map_voice(voice_name: str) -> str:
 # CLI argument builder
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Font configuration — Vietnamese-capable Unicode font
+# ---------------------------------------------------------------------------
+
+DEFAULT_FONT_NAME: str = "NotoSans-Bold.ttf"
+
+
 def build_cli_args(
     *,
     topic: str,
     duration: str,
     voice: str,
     video_source: str = "pexels",
+    font_name: str = DEFAULT_FONT_NAME,
 ) -> list[str]:
     """
     Build the list of CLI arguments for ``python cli.py``.
@@ -150,6 +158,7 @@ def build_cli_args(
         duration:     Duration string ("45", "60", "90").
         voice:        Voice name ("marin", "onyx").
         video_source: Material source ("pexels", "pixabay", "coverr", "local").
+        font_name:    Subtitle font filename in resource/fonts (default: NotoSans-Bold.ttf).
 
     Returns:
         Argument list ready for ``subprocess.run([python, "cli.py", *args])``.
@@ -162,8 +171,8 @@ def build_cli_args(
     mpt_voice = map_voice(voice)
     
     script_prompt = (
-        f"Viết kịch bản tiếng Việt có độ dài khoảng {word_budget} từ. "
-        f"Đây là kịch bản cho video ngắn {duration} giây."
+        f"Hãy viết kịch bản dẫn chuyện tiếng Việt hoàn chỉnh, hấp dẫn, gồm đúng {paragraphs} đoạn văn chi tiết (tuyệt đối không bỏ dở câu). "
+        f"Tổng độ dài khoảng {word_budget} từ để thời lượng đọc vừa vặn {duration} giây."
     )
 
     return [
@@ -174,6 +183,7 @@ def build_cli_args(
         "--video-source", video_source,
         "--subtitle-enabled",
         "--subtitle-position", "bottom",
+        "--font-name", font_name,
         "--video-language", "vi-VN",
         "--bgm-type", "random",
         "--match-materials-to-script",
