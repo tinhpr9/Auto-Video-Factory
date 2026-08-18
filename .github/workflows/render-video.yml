@@ -144,6 +144,8 @@ jobs:
           echo "Expected scenes from pack: $EXPECTED_SCENES (scene01.mp4 .. ${LAST_SCENE})"
 
           gh release create "$SESSION_TAG" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
             --draft \
             --title "Flow Ingress Session ${{ github.run_id }}" \
             --notes-file flow_pack_output/flow_checklist.txt \
@@ -152,7 +154,7 @@ jobs:
             flow_pack_output/flow_checklist.txt
 
           # Verify the release was actually created before exposing the URL
-          gh release view "$SESSION_TAG" --json tagName,isDraft | grep '"isDraft":true' || {
+          gh release view "$SESSION_TAG" --repo "${{ github.repository }}" --json tagName,isDraft | grep '"isDraft":true' || {
             echo "::error::Draft release '$SESSION_TAG' was not found after creation. Aborting."
             exit 1
           }
@@ -342,7 +344,7 @@ jobs:
           # Download from GitHub Release mailbox if flow_session is specified
           if [ -n "$AVF_FLOW_SESSION" ]; then
             echo "Downloading Flow clips from session release: $AVF_FLOW_SESSION"
-            gh release download "$AVF_FLOW_SESSION" -p "*.mp4" -D "$flow_input"
+            gh release download "$AVF_FLOW_SESSION" --repo "${{ github.repository }}" -p "*.mp4" -D "$flow_input"
           fi
 
           python - << 'PYEOF'
