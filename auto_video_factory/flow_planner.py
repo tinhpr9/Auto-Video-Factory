@@ -203,36 +203,101 @@ def _build_topic_scenes(
         climax_role = "Body Dao Proof vs Sect Elders"
         climax_action = "Protagonist catching elder's full-force strike bare-handed, golden body unscathed, elders staggering backward in disbelief"
     else:
-        # Generic cultivation archetype — still topic-driven via topic phrase in actions
+        # Generic cultivation archetype — extract story signals from topic keywords
+        # to produce materially different return/climax arcs per topic.
         topic_phrase = topic.strip()[:60]
+        t = topic.lower()
         archetype = "cultivator"
-        awakening_role = "Ancient Power Awakening (Hero Scene)"
-        awakening_env = "Celestial storm gathering over mountain chasm, glowing golden runes shattering the darkness"
-        awakening_action = (
-            f"Ancient dragon spirit seal awakening as protagonist channels the story of '{topic_phrase}': "
-            "golden azure light bursting from protagonist's chest, eyes igniting with sovereign will"
-        )
-        mastery_role = "Sovereign Technique Mastery"
-        mastery_env = "High mountain cliff over ocean of clouds"
-        mastery_action = (
-            f"Protagonist executing signature power born from '{topic_phrase}': "
-            "azure-gold technique aura splitting the cloud layer in a sweeping arc"
-        )
+
+        # -- Story signal extraction --
+        # Detect what the protagonist gains / wields / protects
+        if any(k in t for k in ("gương", "cổ kính", "kính", "mirror", "đảo ngược thời gian")):
+            story_object = "ancient time-mirror relic"
+            awakening_role = "Forbidden Relic Awakening (Hero Scene)"
+            awakening_env = "Shattered ancient tomb chamber, mirrors fracturing as time-reversal energy surges"
+            awakening_action = (
+                "Protagonist seizing the ancient mirror, forbidden time-reversal qi igniting across the chamber walls, "
+                "golden-azure temporal shockwave reversing the flow of falling debris"
+            )
+            return_role = "Relic-Bearer's Return to Sect"
+            return_action = (
+                "Protagonist ascending the sect stairs with the ancient mirror radiating temporal qi, "
+                "each step rewinding the stone cracks underfoot, sovereign time-aura silencing the crowd"
+            )
+            climax_role = "Temporal Proof vs Sect Elders"
+            climax_action = (
+                "Protagonist activating the ancient mirror's full power — the sect plaza frozen in a temporal bubble, "
+                "elders suspended mid-strike, forced to witness the truth of the protagonist's innocence"
+            )
+        elif any(k in t for k in ("trứng", "linh thú", "thú", "spirit beast", "egg", "hộ vệ", "bảo vệ")):
+            story_object = "spirit beast egg / bonded creature"
+            awakening_role = "Beast Bond Awakening (Hero Scene)"
+            awakening_env = "Burning battlefield between sect factions, protagonist shielding the spirit beast egg with their body"
+            awakening_action = (
+                "Spirit beast egg cracking open in a burst of violet-gold ancestral beast qi, "
+                "the newborn spirit beast and protagonist merging auras in a sovereign soul-bond explosion"
+            )
+            return_role = "Beast-Bonded Return to Sect"
+            return_action = (
+                "Protagonist returning to the sect gates with the bonded spirit beast at their side, "
+                "its ancient beast pressure radiating outward as disciples and guards fall to their knees"
+            )
+            climax_role = "Beast-Bond Judgment vs Sect Elders"
+            climax_action = (
+                "Protagonist releasing the spirit beast's full sovereign form — an ancestral beast manifestation "
+                "towering over the sect plaza, elders prostrating before ancient bloodline authority"
+            )
+        elif any(k in t for k in ("bí kíp", "bí mật", "cổ thư", "secret", "tome", "forbidden", "forbidden technique")):
+            story_object = "forbidden ancient tome"
+            awakening_role = "Forbidden Art Awakening (Hero Scene)"
+            awakening_env = "Hidden underground vault, ancient celestial seals cracking open under protagonist's qi"
+            awakening_action = (
+                "Protagonist absorbing the forbidden technique into their meridians, "
+                "celestial script characters burning gold-azure along their arms as ancient art awakens"
+            )
+            return_role = "Forbidden Art Bearer's Return"
+            return_action = (
+                "Protagonist walking back toward the sect, forbidden art pulsing in visible celestial "
+                "rune trails behind each step, the air splitting with sovereign pressure"
+            )
+            climax_role = "Forbidden Art Demonstration vs Elders"
+            climax_action = (
+                "Protagonist unleashing the forbidden technique — a celestial art vortex tearing through "
+                "the sect plaza, ancient power overwhelming every elder's defensive formation"
+            )
+        else:
+            # Deep generic: use topic phrase for exile/awakening, derive return/climax from protagonist archetype word
+            story_object = topic_phrase
+            awakening_role = "Ancient Power Awakening (Hero Scene)"
+            awakening_env = "Celestial storm gathering over mountain chasm, glowing golden runes shattering the darkness"
+            awakening_action = (
+                f"Ancient dragon spirit seal awakening as protagonist channels '{topic_phrase}': "
+                "golden azure light bursting from protagonist's chest, eyes igniting with sovereign will"
+            )
+            return_role = "Sovereign Return to Sect"
+            return_action = (
+                f"Protagonist returning transformed by '{topic_phrase[:40]}', "
+                "flowing indigo robe billowing with immense azure spiritual pressure, "
+                "the path ahead clearing as spirit energy radiates outward"
+            )
+            climax_role = "Sovereign Confrontation & Proof"
+            climax_action = (
+                f"Protagonist facing sect elders, releasing power born from '{topic_phrase[:40]}' — "
+                "golden-azure spiritual shockwave forcing crowd to kneel, truth undeniable"
+            )
+
         exile_role = "Unjust Expulsion & Rejection"
         exile_action = (
-            f"Protagonist cast out because of the conflict in '{topic_phrase}': "
+            f"Protagonist cast out, the cause rooted in '{topic_phrase}': "
             "standing alone at the sect gate, stripping off disciple token with cold unbreakable resolve"
         )
-        return_role = "Majestic Return to Sect"
-        return_action = (
-            "Protagonist returning transformed by the journey, "
-            "flowing indigo robe billowing with immense azure spiritual pressure"
+        mastery_role = f"Mastery: {story_object[:40]}"
+        mastery_env = "High mountain cliff over ocean of clouds, wind howling with ancient power"
+        mastery_action = (
+            f"Protagonist demonstrating mastery of '{topic_phrase[:40]}': "
+            "azure-gold technique aura splitting the cloud layer in a sweeping sovereign arc"
         )
-        climax_role = "Sect Confrontation & Climax"
-        climax_action = (
-            "Protagonist facing the sect elders, drawing celestial blade, "
-            "golden-azure spiritual shockwave forcing crowd to kneel"
-        )
+
 
     # Build 6-scene or 9-scene arc
     if scene_count == 9:

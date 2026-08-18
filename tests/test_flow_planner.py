@@ -176,6 +176,59 @@ class TestFlowCLI:
 # 5. Clip Validation & Audio Stripping (Fail-Closed & Exact Scenes)
 # ===========================================================================
 
+# NEEDS_EVIDENCE→VALID: Generic topic divergence
+# Evidence: two generic topics (no kiếm/đan/thể keywords) produce identical roles
+# and share 4/6 identical actions. Only scenes 2 and 4 differ because the literal
+# topic string is injected. This is NOT material narrative divergence.
+class TestGenericTopicDiversity:
+    """Generic topics (no archetype keyword) must produce materially different
+    narrative arcs beyond literal topic-string injection."""
+
+    # RED: roles must differ between two unrelated generic topics
+    def test_generic_topics_produce_different_narrative_roles(self):
+        """Two unrelated generic topics must have at least some differing narrative roles."""
+        topic_mirror = "Một đệ tử khám phá cổ kính đảo ngược thời gian tại mộ địa cổ đại"
+        topic_beast  = "Một cô nhi bảo vệ trứng linh thú trong cuộc chiến tranh tông môn"
+
+        pack_a = plan_flow_scenes(topic_mirror)
+        pack_b = plan_flow_scenes(topic_beast)
+
+        roles_a = [s.narrative_role for s in pack_a.scenes]
+        roles_b = [s.narrative_role for s in pack_b.scenes]
+
+        # At least scenes 2, 4, 5, or 6 should differ by role
+        differing_roles = sum(1 for a, b in zip(roles_a, roles_b) if a != b)
+        assert differing_roles >= 2, (
+            f"Generic topics produce {differing_roles} differing roles (expected >= 2). "
+            f"Roles A: {roles_a}, Roles B: {roles_b}. "
+            "Generic topics must map to materially different narrative arcs."
+        )
+
+    # RED: actions must differ on more than just injected topic string
+    def test_generic_topics_produce_different_actions_beyond_string_injection(self):
+        """Scenes 5 and 6 must differ between generic topics — they do NOT inject topic string."""
+        topic_mirror = "Một đệ tử khám phá cổ kính đảo ngược thời gian tại mộ địa cổ đại"
+        topic_beast  = "Một cô nhi bảo vệ trứng linh thú trong cuộc chiến tranh tông môn"
+
+        pack_a = plan_flow_scenes(topic_mirror)
+        pack_b = plan_flow_scenes(topic_beast)
+
+        # Scenes 5 and 6 in the generic path do NOT inject topic string
+        # If they are identical, the archetype is fully generic and non-diverging
+        scene5_a = pack_a.scenes[4].action
+        scene5_b = pack_b.scenes[4].action
+        scene6_a = pack_a.scenes[5].action
+        scene6_b = pack_b.scenes[5].action
+
+        assert scene5_a != scene5_b or scene6_a != scene6_b, (
+            "Generic topics must produce at least one materially different action "
+            "in scenes 5 or 6 (which do not inject topic string). "
+            f"Scene 5 A: {scene5_a[:60]!r} == B: {scene5_b[:60]!r}, "
+            f"Scene 6 A: {scene6_a[:60]!r} == B: {scene6_b[:60]!r}. "
+            "The generic archetype must do more than inject the topic string."
+        )
+
+
 class TestFlowClipStaging:
     def test_validate_nonexistent_clip(self, tmp_path):
         assert not validate_clip(tmp_path / "nonexistent.mp4")

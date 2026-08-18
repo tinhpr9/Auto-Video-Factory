@@ -125,35 +125,122 @@ def test_artifact_upload_path_contains_video():
 
 
 # ---------------------------------------------------------------------------
-# Bug 4 (RED): draft release mailbox must fail closed
+# Valid 1 (RED): workflow summary must reflect actual scene count, not hardcoded 6
+# ---------------------------------------------------------------------------
+
+def test_prepare_flow_pack_summary_does_not_hardcode_6_clips():
+    """Summary must NOT hardcode '6 clips' or 'scene06.mp4' independent of duration."""
+    text = _text()
+    # '6 clips' hardcoded in summary step for ALL durations is wrong for 90s
+    assert "generate the 6 clips" not in text, (
+        "Workflow summary must not hardcode '6 clips' — count depends on duration"
+    )
+
+def test_prepare_flow_pack_summary_does_not_hardcode_scene06():
+    """Summary must NOT hardcode 'scene06.mp4' — 90s requires scene09.mp4."""
+    text = _text()
+    assert "through scene06.mp4" not in text, (
+        "Workflow summary must not hardcode 'through scene06.mp4' — 90s uses 9 scenes"
+    )
+
+def test_prepare_flow_pack_summary_references_scene_count_variable():
+    """Summary must use SCENE_COUNT variable derived from duration, not a literal."""
+    text = _text()
+    # Verify that the summary uses a computed variable (EXPECTED_SCENES or similar)
+    assert "EXPECTED_SCENES" in text or "scene_count" in text.lower() or "SCENE_COUNT" in text, (
+        "Workflow summary must derive scene count from duration, not hardcode 6"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Valid 2 (RED): least privilege — render path must not have contents: write
+# ---------------------------------------------------------------------------
+
+def test_prepare_flow_pack_job_has_contents_write():
+    """prepare_flow_pack path needs contents: write to create Draft Release."""
+    text = _text()
+    assert "contents: write" in text, (
+        "prepare_flow_pack path must have contents: write to create Draft Release"
+    )
+
+def test_render_path_does_not_have_workflow_wide_contents_write():
+    """Workflow-level permissions block must NOT set contents: write.
+    Only the prepare job (job-level) should have contents: write."""
+    import re
+    text = _text()
+    before_jobs = text.split("jobs:", 1)[0]
+    # Match actual YAML key 'contents: write' (indented, not inside a comment '#...')
+    # Remove comment lines before checking
+    non_comment_lines = "\n".join(
+        line for line in before_jobs.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert not re.search(r"^\s*contents:\s*write", non_comment_lines, re.MULTILINE), (
+        "contents: write must not be set at workflow level (outside comments) — "
+        "it grants write access to ALL paths. Only prepare job should have write access."
+    )
+
+def test_render_job_has_contents_read_not_write():
+    """Workflow-level permissions must be contents: read (render job must not get write)."""
+    import re
+    text = _text()
+    before_jobs = text.split("jobs:", 1)[0]
+    non_comment_lines = "\n".join(
+        line for line in before_jobs.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert re.search(r"^\s*contents:\s*read", non_comment_lines, re.MULTILINE), (
+        "Workflow-level permissions must set contents: read so render path gets read-only access"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Valid 3 (RED): release view ordering — must strictly require gh release view
+# ---------------------------------------------------------------------------
+
+def test_flow_upload_url_not_set_before_release_verify():
+    """FLOW_UPLOAD_URL must only be set AFTER gh release view confirms creation.
+    SESSION_TAG alone is not sufficient verification."""
+    text = _text()
+    create_idx = text.find("gh release create")
+    url_idx = text.find("FLOW_UPLOAD_URL=")
+    if create_idx == -1 or url_idx == -1:
+        return
+    between = text[create_idx:url_idx]
+    # Must contain 'gh release view' — SESSION_TAG alone is NOT sufficient
+    assert "gh release view" in between, (
+        "FLOW_UPLOAD_URL must only be set after 'gh release view' confirms the release exists. "
+        "SESSION_TAG alone does not verify the release was created."
+    )
+
+def test_release_view_required_between_create_and_url():
+    """Removing 'gh release view' must cause this test to fail — it is not optional."""
+    text = _text()
+    # If gh release view is absent entirely, the ordering guarantee is broken
+    assert "gh release view" in text, (
+        "gh release view must exist in workflow to verify Draft Release before exposing URL"
+    )
+    # Verify ordering: create → view → URL
+    create_idx = text.find("gh release create")
+    view_idx = text.find("gh release view")
+    url_idx = text.find("FLOW_UPLOAD_URL=")
+    assert create_idx != -1 and view_idx != -1 and url_idx != -1, (
+        "All three steps (create, view, URL set) must exist"
+    )
+    assert create_idx < view_idx < url_idx, (
+        f"Ordering violated: create@{create_idx} view@{view_idx} url@{url_idx}. "
+        "Must be create < view < FLOW_UPLOAD_URL="
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bug 4 (existing): draft release must not be suppressed
 # ---------------------------------------------------------------------------
 
 def test_draft_release_create_not_suppressed():
     """gh release create block must NOT be suppressed with '|| echo' or '|| true'."""
     text = _text()
-    # The run block may use multiline backslash continuation.
-    # Check that within any run: block containing 'gh release create', there is no
-    # '|| echo' or '|| true' following the create command (on same or continuation lines).
     assert "gh release create" in text, "Expected 'gh release create' in workflow"
-    assert "|| echo" not in text or "Draft release creation skipped" not in text, (
-        "gh release create must not be silently suppressed with '|| echo'"
-    )
-    # Specifically: the old || echo warning pattern must be gone
     assert "Draft release creation skipped" not in text, (
         "gh release create must not suppress failure with error-masking warning text"
     )
-
-def test_flow_upload_url_not_set_before_release_verify():
-    """FLOW_UPLOAD_URL must only be set after verifying release creation succeeded."""
-    text = _text()
-    create_idx = text.find("gh release create")
-    url_idx = text.find("FLOW_UPLOAD_URL=")
-    if create_idx == -1 or url_idx == -1:
-        return  # steps may not both exist yet
-    # There must be a verification step (gh release view) between create and URL set
-    between = text[create_idx:url_idx]
-    assert "gh release view" in between or "SESSION_TAG" in between, (
-        "FLOW_UPLOAD_URL must only be set after verifying the release was actually created"
-    )
-
-

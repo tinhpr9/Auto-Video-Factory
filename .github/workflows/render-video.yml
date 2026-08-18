@@ -76,13 +76,119 @@ on:
         default: ""
         type: string
 
+# Workflow-level: minimal read-only baseline for all paths.
+# The prepare job overrides to contents: write for Draft Release creation.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # ============================================================
+  # JOB A: prepare_flow_pack — generates Scene Pack + Draft Release mailbox
+  # Requires contents: write to create the Draft Release.
+  # Does NOT run MoneyPrinterTurbo.
+  # ============================================================
+  prepare:
+    if: inputs.visual_provider == 'prepare_flow_pack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # Required for: gh release create (Draft Release mailbox)
+    env:
+      AVF_TOPIC: ${{ inputs.topic }}
+      AVF_DURATION: ${{ inputs.duration_seconds }}
+      AVF_FLOW_MODE: ${{ inputs.flow_mode || 'flow_balanced' }}
+
+    steps:
+      - name: Checkout Auto-Video-Factory
+        uses: actions/checkout@v4
+        with:
+          path: avf
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate Flow Scene Pack
+        run: |
+          python - << 'PYEOF'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.flow_planner import plan_flow_scenes, export_flow_pack
+
+          topic    = os.environ.get("AVF_TOPIC", "")
+          duration = int(os.environ.get("AVF_DURATION", "45"))
+          mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+
+          pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+          pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
+          paths = export_flow_pack(pack, pack_dir)
+          print(f"Generated Flow Scene Pack: {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
+          print(f"Pack files: {list(paths.values())}")
+          PYEOF
+
+      - name: Create Flow Session Draft Release and Upload Artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SESSION_TAG="flow-session-${{ github.run_id }}"
+          DURATION="${AVF_DURATION:-45}"
+          # Derive expected scene count from duration — must match flow_planner.py logic
+          if [ "$DURATION" -ge 90 ]; then
+            EXPECTED_SCENES=9
+          else
+            EXPECTED_SCENES=6
+          fi
+          LAST_SCENE=$(printf "scene%02d.mp4" "$EXPECTED_SCENES")
+
+          echo "Creating Draft Release for Android Flow Mailbox: $SESSION_TAG"
+          echo "Expected scenes for ${DURATION}s: $EXPECTED_SCENES (scene01.mp4 .. ${LAST_SCENE})"
+
+          gh release create "$SESSION_TAG" \
+            --draft \
+            --title "Flow Ingress Session ${{ github.run_id }}" \
+            --notes-file flow_pack_output/flow_checklist.txt \
+            flow_pack_output/flow_prompts.txt \
+            flow_pack_output/flow_scene_pack.json \
+            flow_pack_output/flow_checklist.txt
+
+          # Verify the release was actually created before exposing the URL
+          gh release view "$SESSION_TAG" --json tagName,isDraft | grep '"isDraft":true' || {
+            echo "::error::Draft release '$SESSION_TAG' was not found after creation. Aborting."
+            exit 1
+          }
+
+          UPLOAD_URL="https://github.com/${{ github.repository }}/releases/edit/$SESSION_TAG"
+          echo "FLOW_UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
+
+          # Add mobile workflow summary with dynamic scene count
+          echo "## 📱 Google Flow Mobile Ingress Session" >> $GITHUB_STEP_SUMMARY
+          echo "**Session Tag:** \`$SESSION_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Android Upload URL:** [Upload Clips Here]($UPLOAD_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Steps for Android:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Open Google Flow and generate the **${EXPECTED_SCENES} clips** using \`flow_prompts.txt\`." >> $GITHUB_STEP_SUMMARY
+          echo "2. Open the [Upload URL]($UPLOAD_URL) and attach \`scene01.mp4\` through \`${LAST_SCENE}\`." >> $GITHUB_STEP_SUMMARY
+          echo "3. Run render workflow with \`visual_provider=flow_clips\` and \`flow_session=$SESSION_TAG\`." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Flow Quality Pack Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-quality-pack
+          path: flow_pack_output/
+          retention-days: 3
+
+  # ============================================================
+  # JOB B: render — composites video using flow_clips or pexels
+  # Uses contents: read only (no release creation).
+  # ============================================================
   render:
+    if: inputs.visual_provider != 'prepare_flow_pack'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read    # render/pexels/flow_clips must not create or modify releases
     env:
       AVF_TOPIC: ${{ inputs.topic }}
       AVF_DURATION: ${{ inputs.duration_seconds }}
@@ -121,16 +227,13 @@ jobs:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          # prepare_flow_pack requires ZERO secrets ($0 spend)
-          if [ "$AVF_VISUAL_PROVIDER" != "prepare_flow_pack" ]; then
-            if [ -z "$GEMINI_API_KEY" ]; then
-              echo "::error::Missing repository secret GEMINI_API_KEY for video rendering. Please set it in Settings -> Secrets and variables -> Actions."
-              exit 1
-            fi
-            if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
-              echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
-              exit 1
-            fi
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::Missing repository secret GEMINI_API_KEY for video rendering. Please set it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
+            echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
+            exit 1
           fi
 
           python - << 'PYEOF'
@@ -140,73 +243,25 @@ jobs:
           from auto_video_factory.flow_planner import plan_flow_scenes, export_flow_pack
 
           provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
-          topic = os.environ.get("AVF_TOPIC", "")
+          topic    = os.environ.get("AVF_TOPIC", "")
           duration = int(os.environ.get("AVF_DURATION", "45"))
-          mode = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+          mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
 
           print(f"Executing Preflight for Visual Provider: {provider} (Flow Mode: {mode})")
 
-          if provider in ("flow_clips", "prepare_flow_pack"):
+          if provider == "flow_clips":
               pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
               pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
               paths = export_flow_pack(pack, pack_dir)
               print(f"Generated Flow Scene Pack: {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
-              print(f"Pack files created at: {pack_dir}")
 
           print("Preflight validation: OK")
           PYEOF
 
       # -------------------------------------------------------
-      # 3.5 If prepare_flow_pack, create draft release session & upload artifact
-      # -------------------------------------------------------
-      - name: Create Flow Session Draft Release and Upload Artifact
-        if: inputs.visual_provider == 'prepare_flow_pack'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SESSION_TAG="flow-session-${{ github.run_id }}"
-          echo "Creating Draft Release for Android Flow Mailbox: $SESSION_TAG"
-
-          gh release create "$SESSION_TAG" \
-            --draft \
-            --title "Flow Ingress Session ${{ github.run_id }}" \
-            --notes-file flow_pack_output/flow_checklist.txt \
-            flow_pack_output/flow_prompts.txt \
-            flow_pack_output/flow_scene_pack.json \
-            flow_pack_output/flow_checklist.txt
-
-          # Verify the release was actually created before exposing the URL
-          gh release view "$SESSION_TAG" --json tagName,isDraft | grep '"isDraft":true' || {
-            echo "::error::Draft release '$SESSION_TAG' was not found after creation. Aborting."
-            exit 1
-          }
-
-          UPLOAD_URL="https://github.com/${{ github.repository }}/releases/edit/$SESSION_TAG"
-          echo "FLOW_UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
-
-          # Add mobile workflow summary
-          echo "## 📱 Google Flow Mobile Ingress Session" >> $GITHUB_STEP_SUMMARY
-          echo "**Session Tag:** \`$SESSION_TAG\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Android Upload URL:** [Upload Clips Here]($UPLOAD_URL)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Steps for Android:" >> $GITHUB_STEP_SUMMARY
-          echo "1. Open Google Flow and generate the 6 clips using \`flow_prompts.txt\`." >> $GITHUB_STEP_SUMMARY
-          echo "2. Open the [Upload URL]($UPLOAD_URL) and attach \`scene01.mp4\` through \`scene06.mp4\`." >> $GITHUB_STEP_SUMMARY
-          echo "3. Run render workflow with \`visual_provider=flow_clips\` and \`flow_session=$SESSION_TAG\`." >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Flow Quality Pack Artifact
-        if: inputs.visual_provider == 'prepare_flow_pack'
-        uses: actions/upload-artifact@v4
-        with:
-          name: flow-quality-pack
-          path: flow_pack_output/
-          retention-days: 3
-
-      # -------------------------------------------------------
       # 4. Checkout MoneyPrinterTurbo at pinned SHA
       # -------------------------------------------------------
       - name: Checkout MoneyPrinterTurbo at pinned SHA
-        if: inputs.visual_provider != 'prepare_flow_pack'
         run: |
           git clone --depth 1 "$MPT_REPO" mpt || git clone "$MPT_REPO" mpt
           cd mpt
@@ -218,7 +273,6 @@ jobs:
       # 5. System dependencies (with bounded timeout & non-interactive)
       # -------------------------------------------------------
       - name: Install system dependencies
-        if: inputs.visual_provider != 'prepare_flow_pack'
         timeout-minutes: 8
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -238,11 +292,9 @@ jobs:
       # 6. Install uv and MPT dependencies
       # -------------------------------------------------------
       - name: Install uv
-        if: inputs.visual_provider != 'prepare_flow_pack'
         run: pip install uv --quiet
 
       - name: Install MPT dependencies
-        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         run: |
           uv venv .venv
@@ -254,7 +306,6 @@ jobs:
       # 7. Generate MPT config.toml
       # -------------------------------------------------------
       - name: Generate MPT config.toml
-        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
@@ -295,7 +346,6 @@ jobs:
             gh release download "$AVF_FLOW_SESSION" -p "*.mp4" -D "$flow_input"
           fi
 
-
           python - << 'PYEOF'
           import os, sys
           from pathlib import Path
@@ -324,7 +374,6 @@ jobs:
       # 8. Render video with MoneyPrinterTurbo
       # -------------------------------------------------------
       - name: Render video with MoneyPrinterTurbo
-        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         run: |
           python - << 'PYEOF'
@@ -371,7 +420,6 @@ jobs:
       # 9. Locate output video and write metadata
       # -------------------------------------------------------
       - name: Locate output and write metadata
-        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         run: |
           python - << 'PYEOF'
@@ -421,37 +469,35 @@ jobs:
       # 10. Verify output video duration before upload
       # -------------------------------------------------------
       - name: Verify output video
-        if: inputs.visual_provider != 'prepare_flow_pack'
         run: |
           test -s mpt/avf_output/video.mp4 || { echo "VERIFY FAIL: empty video"; exit 1; }
-          
+
           EXPECTED=${AVF_DURATION}
           ACTUAL=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 mpt/avf_output/video.mp4 || true)
           ACTUAL_INT=${ACTUAL%.*}
-          
-          if ! [[ "$ACTUAL_INT" =~ ^[0-9]+$ ]]; then 
+
+          if ! [[ "$ACTUAL_INT" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid duration from ffprobe: $ACTUAL"
             exit 1
           fi
-          
+
           echo "Expected duration: $EXPECTED seconds"
           echo "Actual duration: $ACTUAL_INT seconds"
-          
+
           DIFF=$(( ACTUAL_INT - EXPECTED ))
           DIFF=${DIFF#-}
-          
+
           if [ "$DIFF" -gt 5 ] && [ "$DIFF" -gt $(( EXPECTED / 10 )) ]; then
             echo "::error::VERIFY FAIL: Video duration outside tolerance. Expected $EXPECTED, got $ACTUAL_INT"
             exit 1
           fi
-          
+
           echo "VERIFY PASS"
 
       # -------------------------------------------------------
       # 11. Upload video artifact (1 day retention)
       # -------------------------------------------------------
       - name: Upload video artifact
-        if: inputs.visual_provider != 'prepare_flow_pack'
         uses: actions/upload-artifact@v4
         with:
           name: auto-video-output
@@ -461,3 +507,4 @@ jobs:
             mpt/avf_output/result.json
           if-no-files-found: error
           retention-days: 1
+
