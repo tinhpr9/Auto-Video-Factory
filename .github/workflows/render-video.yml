@@ -50,6 +50,27 @@ on:
         options:
           - pexels
           - pixabay
+      visual_provider:
+        description: "Visual Provider (pexels hoặc AI Gemini Video 100% tự động)"
+        required: true
+        default: pexels
+        type: choice
+        options:
+          - pexels
+          - gemini_video
+      quality_mode:
+        description: "Chế độ AI Video (economy tối ưu chi phí, quality)"
+        required: true
+        default: economy
+        type: choice
+        options:
+          - economy
+          - quality
+      max_video_generation_seconds:
+        description: "Giới hạn tối đa số giây AI Video sinh ra (Cost Guard)"
+        required: false
+        default: "60"
+        type: string
 
 permissions:
   contents: read
@@ -64,6 +85,9 @@ jobs:
       AVF_DURATION: ${{ inputs.duration_seconds }}
       AVF_VOICE: ${{ inputs.voice }}
       AVF_VIDEO_SOURCE: ${{ inputs.video_source }}
+      AVF_VISUAL_PROVIDER: ${{ inputs.visual_provider || 'pexels' }}
+      AVF_QUALITY_MODE: ${{ inputs.quality_mode || 'economy' }}
+      AVF_MAX_GEN_SECONDS: ${{ inputs.max_video_generation_seconds || '60' }}
       # Pinned upstream SHA — single source of truth
       MPT_SHA: b42e945b497176c823579f9b1895d9323446de23
       MPT_REPO: https://github.com/harry0703/MoneyPrinterTurbo
@@ -107,9 +131,9 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 3.5 Validate required secrets
+      # 3.5 Validate required secrets and provider preflight
       # -------------------------------------------------------
-      - name: Validate required secrets
+      - name: Validate secrets and provider preflight
         shell: bash
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -119,10 +143,30 @@ jobs:
             echo "::error::Missing repository secret GEMINI_API_KEY. Please set it in Settings -> Secrets and variables -> Actions."
             exit 1
           fi
-          if [ -z "$PEXELS_API_KEY" ]; then
-            echo "::error::Missing repository secret PEXELS_API_KEY."
+          if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
+            echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
             exit 1
           fi
+
+          python - << 'PYEOF'
+          import os, sys
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.visual_provider import get_visual_provider
+
+          provider_name = os.environ.get("AVF_VISUAL_PROVIDER", "pexels")
+          provider = get_visual_provider(provider_name)
+          print(f"Running preflight check for provider: {provider.name}")
+
+          api_key = os.environ.get("GEMINI_API_KEY", "") if provider.name == "gemini_video" else os.environ.get("PEXELS_API_KEY", "")
+          result = provider.preflight_check(api_key)
+          print(f"Preflight status: {result.get('status')} - {result.get('message', '')}")
+          if result.get("status") != "ok":
+              reason = result.get("reason", "unknown")
+              print(f"::error::Preflight failed for {provider.name}: {reason}")
+              if reason == "unauthorized_or_billing_required":
+                  print("::notice::FINAL_STATUS=BLOCKED_BILLING (Gemini video access requires billing enabled on Google Cloud)")
+              sys.exit(1)
+          PYEOF
 
       # -------------------------------------------------------
       # 4. Setup Python + uv
@@ -174,6 +218,38 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
+      # 6.5 Plan AI Video Scenes (if visual_provider == gemini_video)
+      # -------------------------------------------------------
+      - name: Plan and Stage Visual Scenes
+        working-directory: mpt
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - << 'PYEOF'
+          import os, sys, json
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.visual_provider import get_visual_provider, GEMINI_VIDEO_MODEL
+
+          provider_name = os.environ.get("AVF_VISUAL_PROVIDER", "pexels")
+          if provider_name == "gemini_video":
+              provider = get_visual_provider("gemini_video")
+              topic = os.environ.get("AVF_TOPIC", "")
+              duration = int(os.environ.get("AVF_DURATION", "45"))
+              quality_mode = os.environ.get("AVF_QUALITY_MODE", "economy")
+              max_seconds = int(os.environ.get("AVF_MAX_GEN_SECONDS", "60"))
+
+              scenes = provider.plan_scenes(
+                  topic=topic,
+                  duration_seconds=duration,
+                  quality_mode=quality_mode,
+                  max_seconds=max_seconds,
+              )
+              print(f"Planned {len(scenes)} scenes for duration {duration}s using {GEMINI_VIDEO_MODEL}")
+              with open("planned_scenes.json", "w", encoding="utf-8") as f:
+                  json.dump([s.to_dict() for s in scenes], f, ensure_ascii=False, indent=2)
+          PYEOF
+
+      # -------------------------------------------------------
       # 7. Run MoneyPrinterTurbo CLI
       #    Topic is passed via env var AVF_TOPIC, then read by
       #    Python → passed as a list element to subprocess.
@@ -183,20 +259,24 @@ jobs:
         working-directory: mpt
         run: |
           python - << 'PYEOF'
-          import os, sys, subprocess, json
+          import os, sys, subprocess, json, glob
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
           from auto_video_factory.mpt_adapter import build_cli_args
 
           topic        = os.environ["AVF_TOPIC"]
           duration     = os.environ["AVF_DURATION"]
           voice        = os.environ["AVF_VOICE"]
-          video_source = os.environ["AVF_VIDEO_SOURCE"]
+          provider     = os.environ.get("AVF_VISUAL_PROVIDER", "pexels")
+          video_source = "local" if provider == "gemini_video" and glob.glob("storage/local_videos/*.mp4") else os.environ["AVF_VIDEO_SOURCE"]
+
+          local_materials = ",".join(glob.glob("storage/local_videos/*.mp4")) if video_source == "local" else ""
 
           cli_args = build_cli_args(
               topic=topic,
               duration=duration,
               voice=voice,
               video_source=video_source,
+              video_materials=local_materials,
           )
           cmd = [sys.executable, "cli.py"] + cli_args
           print("Running MPT CLI (topic redacted from log):", cmd[:3], "... [args]")
@@ -215,6 +295,7 @@ jobs:
           import os, sys, json, shutil, glob
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
           from auto_video_factory.mpt_adapter import locate_output_video, sanitize_result_metadata
+          from auto_video_factory.visual_provider import GEMINI_VIDEO_MODEL
 
           mpt_root = os.getcwd()
 
@@ -239,6 +320,15 @@ jobs:
           if srt_candidates:
               shutil.copy2(srt_candidates[0], os.path.join(out_dir, "captions.srt"))
 
+          provider = os.environ.get("AVF_VISUAL_PROVIDER", "pexels")
+          planned_scenes_count = 0
+          if os.path.exists("planned_scenes.json"):
+              try:
+                  with open("planned_scenes.json", encoding="utf-8") as f:
+                      planned_scenes_count = len(json.load(f))
+              except Exception:
+                  pass
+
           # Write sanitized metadata
           meta = sanitize_result_metadata({
               "status": "ok",
@@ -248,6 +338,11 @@ jobs:
               "duration_input": os.environ.get("AVF_DURATION"),
               "voice": os.environ.get("AVF_VOICE"),
               "video_source": os.environ.get("AVF_VIDEO_SOURCE"),
+              "visual_provider": provider,
+              "video_model": GEMINI_VIDEO_MODEL if provider == "gemini_video" else "pexels",
+              "quality_mode": os.environ.get("AVF_QUALITY_MODE", "economy"),
+              "planned_scene_count": planned_scenes_count,
+              "planned_generated_seconds": planned_scenes_count * 8 if provider == "gemini_video" else 0,
               "video_size_bytes": os.path.getsize(os.path.join(out_dir, "video.mp4")),
           })
           with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as f:

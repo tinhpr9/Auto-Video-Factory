@@ -29,7 +29,15 @@ def test_manual_render_workflow_exposes_phone_friendly_inputs():
     text = _text()
     assert "name: Auto Video Factory" in text
     assert "workflow_dispatch:" in text
-    for field in ["topic:", "duration_seconds:", "voice:", "video_source:"]:
+    for field in [
+        "topic:",
+        "duration_seconds:",
+        "voice:",
+        "video_source:",
+        "visual_provider:",
+        "quality_mode:",
+        "max_video_generation_seconds:",
+    ]:
         assert field in text, f"Expected input field {field!r} in workflow"
     assert "pull_request:" not in text
 
