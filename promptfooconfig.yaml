@@ -1,0 +1,26 @@
+# Deterministic contract eval for the production story prompt.
+description: Auto Video Factory V3 story prompt contract
+prompts:
+  - exec:python evals/prompt_builder.py
+providers:
+  - id: file://evals/contract_provider.py
+tests:
+  - vars:
+      topic: "Một kiếm tu bị tông môn ruồng bỏ nhưng thức tỉnh kiếm ý"
+      scene_count: 8
+      visual_style: "ink-wash fantasy, monochrome mist"
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const x = JSON.parse(output);
+          return typeof x.title === 'string' && typeof x.character_anchor === 'string' && Array.isArray(x.scenes) && x.scenes.length === 8 && x.scenes.every(s => typeof s.narration === 'string' && typeof s.visual_prompt === 'string');
+  - vars:
+      topic: "Một người giữ bí mật dưới sơn môn"
+      scene_count: 3
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const x = JSON.parse(output);
+          return x.scenes.length === 3 && x.scenes.every(s => s.narration.length > 10 && s.visual_prompt.length > 10);

@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Auto Video Factory</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #17324d 0, #0c1420 38%, #070b12 100%); color: #f6f8fb; }
+    main { width: min(100%, 760px); margin: 0 auto; padding: 28px 16px 56px; }
+    .hero { margin-bottom: 22px; }
+    .eyebrow { color: #84d8ff; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: .75rem; }
+    h1 { margin: 8px 0 8px; font-size: clamp(2rem, 9vw, 3.6rem); line-height: .98; }
+    .sub { margin: 0; color: #aab7c8; line-height: 1.55; }
+    .card { background: rgba(16, 26, 40, .88); border: 1px solid rgba(145, 196, 230, .15); border-radius: 24px; padding: 18px; box-shadow: 0 24px 70px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
+    .hidden { display: none !important; }
+    label { display: block; font-size: .86rem; color: #c9d5e4; margin: 15px 0 7px; font-weight: 700; }
+    textarea, select, input { width: 100%; border: 1px solid #29445c; background: #0b1521; color: white; border-radius: 14px; padding: 13px 14px; font: inherit; outline: none; }
+    textarea { min-height: 118px; resize: vertical; line-height: 1.45; }
+    textarea:focus, select:focus, input:focus { border-color: #65c8f5; box-shadow: 0 0 0 3px rgba(101,200,245,.12); }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    button { width: 100%; margin-top: 20px; border: 0; border-radius: 15px; padding: 15px 18px; font: inherit; font-weight: 900; color: #061019; background: linear-gradient(135deg,#7ee0ff,#b4f1d3); cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .secondary { width:auto; margin:0; padding:8px 10px; color:#dff7ff; background:#142739; border:1px solid #31506a; font-size:.78rem; }
+    .status { display: none; margin-top: 16px; padding: 15px; border-radius: 16px; background: #0a121d; border: 1px solid #20364a; }
+    .status.show { display: block; }
+    .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .badge { font-size:.74rem; padding:5px 9px; border-radius:999px; background:#18344a; color:#9ae5ff; font-weight:800; }
+    .progress { margin-top: 12px; height: 9px; background: #152331; border-radius: 999px; overflow: hidden; }
+    .bar { height: 100%; width: 0%; background: linear-gradient(90deg,#7ee0ff,#92f0c1); transition: width .25s ease; }
+    .message { margin: 10px 0 0; color:#c9d6e5; font-size:.92rem; }
+    .result { display:none; margin-top:18px; }
+    .result.show { display:block; }
+    video { width:100%; max-height:70vh; border-radius:18px; background:#000; }
+    .download { display:block; text-align:center; margin-top:12px; padding:13px; border:1px solid #395970; border-radius:13px; color:#dff7ff; text-decoration:none; font-weight:800; }
+    .hint { font-size:.78rem; color:#7890a7; margin-top:10px; }
+    .error { color:#ffb8b8; }
+    @media (min-width: 620px) { .grid { grid-template-columns: repeat(3,1fr); } .card { padding:24px; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Auto Video Factory V3.1</div>
+    <h1>Từ ý tưởng thành video.</h1>
+    <p class="sub">Nhập một chủ đề, server tự làm kịch bản, hình, giọng đọc, phụ đề và render MP4 dọc.</p>
+  </section>
+
+  <form id="loginCard" class="card hidden" autocomplete="off">
+    <strong>Mở khóa Auto Video Factory</strong>
+    <label for="accessCode">Mã truy cập</label>
+    <input id="accessCode" name="access_code" type="password" autocomplete="current-password" maxlength="256" required placeholder="Nhập mã truy cập riêng">
+    <button id="unlockButton" type="submit">Mở khóa</button>
+    <p id="loginMessage" class="hint">Mã chỉ được gửi để mở một phiên tạm thời và không được lưu trên máy.</p>
+  </form>
+
+  <form id="videoForm" class="card hidden">
+    <div class="row">
+      <div><strong>Tạo video mới</strong> <span id="providerBadge" class="badge">Đang kiểm tra…</span></div>
+      <button id="logoutButton" class="secondary hidden" type="button">Khóa lại</button>
+    </div>
+    <label for="topic">Chủ đề</label>
+    <textarea id="topic" name="topic" maxlength="600" required placeholder="Ví dụ: Một kiếm tu bị tông môn ruồng bỏ nhưng thức tỉnh sức mạnh cổ xưa…"></textarea>
+
+    <div class="grid">
+      <div>
+        <label for="duration">Độ dài ước lượng</label>
+        <select id="duration" name="duration_seconds" disabled>
+          <option value="">Đang tải…</option>
+        </select>
+      </div>
+      <div>
+        <label for="voice">Giọng kể</label>
+        <select id="voice" name="voice" disabled>
+          <option value="">Đang tải…</option>
+        </select>
+      </div>
+      <div>
+        <label for="style">Phong cách</label>
+        <select id="style" name="style" disabled>
+          <option value="">Đang tải…</option>
+        </select>
+      </div>
+    </div>
+
+    <button id="generateButton" type="submit" disabled>Đang tải cấu hình…</button>
+    <p class="hint">API key không được nhập trên trang này; nếu dùng AI thật, key chỉ nằm ở server.</p>
+
+    <section id="statusBox" class="status" aria-live="polite">
+      <div class="row"><strong id="statusTitle">Đang xử lý</strong><span id="progressText">0%</span></div>
+      <div class="progress"><div id="progressBar" class="bar"></div></div>
+      <p id="statusMessage" class="message">Đang xếp hàng…</p>
+    </section>
+
+    <section id="resultBox" class="result">
+      <video id="preview" controls playsinline preload="metadata"></video>
+      <a id="downloadLink" class="download" href="#" download="video.mp4">Tải MP4</a>
+    </section>
+  </form>
+</main>
+<script>
+(() => {
+  const loginCard = document.getElementById('loginCard');
+  const loginMessage = document.getElementById('loginMessage');
+  const accessCode = document.getElementById('accessCode');
+  const unlockButton = document.getElementById('unlockButton');
+  const form = document.getElementById('videoForm');
+  const logoutButton = document.getElementById('logoutButton');
+  const button = document.getElementById('generateButton');
+  const statusBox = document.getElementById('statusBox');
+  const statusTitle = document.getElementById('statusTitle');
+  const statusMessage = document.getElementById('statusMessage');
+  const progressText = document.getElementById('progressText');
+  const progressBar = document.getElementById('progressBar');
+  const resultBox = document.getElementById('resultBox');
+  const preview = document.getElementById('preview');
+  const downloadLink = document.getElementById('downloadLink');
+  const providerBadge = document.getElementById('providerBadge');
+  let pollTimer = null;
+  let authToken = sessionStorage.getItem('avf_session') || '';
+  let videoObjectUrl = '';
+  let authRequired = false;
+
+  function headersWithAuth(headers = {}) {
+    const merged = {...headers};
+    if (authToken) merged.Authorization = `Bearer ${authToken}`;
+    return merged;
+  }
+
+  async function apiFetch(url, options = {}) {
+    const response = await fetch(url, {...options, headers: headersWithAuth(options.headers || {})});
+    if (response.status === 401) {
+      authToken = '';
+      sessionStorage.removeItem('avf_session');
+      showLogin('Phiên đã hết hạn. Hãy nhập lại mã truy cập.');
+    }
+    return response;
+  }
+
+  function showLogin(message = 'Nhập mã truy cập để tiếp tục.') {
+    form.classList.add('hidden');
+    loginCard.classList.remove('hidden');
+    loginMessage.textContent = message;
+    loginMessage.classList.remove('error');
+    accessCode.focus();
+  }
+
+  function showGenerator() {
+    loginCard.classList.add('hidden');
+    form.classList.remove('hidden');
+    logoutButton.classList.toggle('hidden', !authRequired);
+  }
+
+  function fillSelect(id, items, valueOf, labelOf, preferred) {
+    const select = document.getElementById(id);
+    select.replaceChildren();
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = valueOf(item);
+      option.textContent = labelOf(item);
+      select.appendChild(option);
+    }
+    if (preferred && Array.from(select.options).some(option => option.value === preferred)) {
+      select.value = preferred;
+    }
+    select.disabled = false;
+  }
+
+  async function loadConfig() {
+    const response = await apiFetch('/api/config');
+    if (!response.ok) throw new Error('config');
+    const config = await response.json();
+    providerBadge.textContent = config.provider === 'openai' ? 'AI thật' : 'Offline demo';
+    fillSelect('duration', config.durations, item => String(item), item => `${item} giây`, '60');
+    fillSelect('voice', config.voices, item => item.id, item => item.label, 'marin');
+    fillSelect('style', config.styles, item => item.id, item => item.label, 'xianxia-cinematic');
+    button.disabled = false;
+    button.textContent = 'Tạo video';
+  }
+
+  async function bootstrap() {
+    try {
+      const response = await apiFetch('/api/session');
+      if (!response.ok) throw new Error('session');
+      const session = await response.json();
+      authRequired = session.auth_required;
+      if (authRequired && !session.authenticated) {
+        showLogin();
+        return;
+      }
+      showGenerator();
+      await loadConfig();
+    } catch (_) {
+      providerBadge.textContent = 'Lỗi cấu hình';
+      button.disabled = true;
+      button.textContent = 'Không thể khởi động';
+      if (authRequired) showLogin('Không thể kết nối server.'); else showGenerator();
+    }
+  }
+
+  loginCard.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    unlockButton.disabled = true;
+    unlockButton.textContent = 'Đang mở…';
+    loginMessage.classList.remove('error');
+    try {
+      const response = await fetch('/api/session', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({code: accessCode.value})
+      });
+      if (!response.ok) {
+        if (response.status === 429) throw new Error('Thử sai quá nhiều lần. Hãy chờ một chút rồi thử lại.');
+        throw new Error('Mã truy cập không đúng.');
+      }
+      const session = await response.json();
+      authToken = session.token;
+      sessionStorage.setItem('avf_session', authToken);
+      accessCode.value = '';
+      showGenerator();
+      await loadConfig();
+    } catch (error) {
+      loginMessage.textContent = error && error.message ? error.message : 'Không thể mở khóa.';
+      loginMessage.classList.add('error');
+    } finally {
+      unlockButton.disabled = false;
+      unlockButton.textContent = 'Mở khóa';
+    }
+  });
+
+  logoutButton.addEventListener('click', async () => {
+    try { await apiFetch('/api/session', {method:'DELETE'}); } catch (_) {}
+    authToken = '';
+    sessionStorage.removeItem('avf_session');
+    showLogin('Đã khóa phiên này.');
+  });
+
+  function setProgress(value, message) {
+    const safe = Math.max(0, Math.min(100, Number(value) || 0));
+    progressBar.style.width = `${safe}%`;
+    progressText.textContent = `${safe}%`;
+    statusMessage.textContent = message || 'Đang xử lý…';
+  }
+
+  async function attachVideo(videoUrl) {
+    const response = await apiFetch(videoUrl);
+    if (!response.ok) throw new Error('Không tải được video thành phẩm.');
+    const blob = await response.blob();
+    if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl);
+    videoObjectUrl = URL.createObjectURL(blob);
+    preview.src = videoObjectUrl;
+    downloadLink.href = videoObjectUrl;
+  }
+
+  async function poll(statusUrl) {
+    const response = await apiFetch(statusUrl);
+    if (!response.ok) throw new Error('Không đọc được trạng thái job.');
+    const job = await response.json();
+    setProgress(job.progress, job.message);
+    if (job.status === 'completed') {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      statusTitle.textContent = job.title || 'Hoàn tất';
+      await attachVideo(job.video_url);
+      resultBox.classList.add('show');
+      button.disabled = false;
+      button.textContent = 'Tạo video khác';
+    } else if (job.status === 'failed') {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      statusTitle.textContent = 'Tạo video thất bại';
+      statusMessage.textContent = job.message || 'Không thể tạo video.';
+      statusMessage.classList.add('error');
+      button.disabled = false;
+      button.textContent = 'Thử lại';
+    }
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (pollTimer) clearInterval(pollTimer);
+    resultBox.classList.remove('show');
+    if (videoObjectUrl) {
+      URL.revokeObjectURL(videoObjectUrl);
+      videoObjectUrl = '';
+    }
+    preview.removeAttribute('src');
+    preview.load();
+    statusMessage.classList.remove('error');
+    statusBox.classList.add('show');
+    statusTitle.textContent = 'Đang tạo video';
+    setProgress(0, 'Đang gửi yêu cầu…');
+    button.disabled = true;
+    button.textContent = 'Đang tạo…';
+
+    const payload = {
+      topic: document.getElementById('topic').value,
+      duration_seconds: Number(document.getElementById('duration').value),
+      voice: document.getElementById('voice').value,
+      style: document.getElementById('style').value
+    };
+
+    try {
+      const response = await apiFetch('/api/jobs', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        if (response.status === 429) throw new Error('Đã chạm giới hạn tạo video của phiên này.');
+        const details = await response.json().catch(() => ({}));
+        throw new Error(details.detail ? 'Dữ liệu chưa hợp lệ.' : 'Không tạo được job.');
+      }
+      const created = await response.json();
+      await poll(created.status_url);
+      if (!resultBox.classList.contains('show') && !statusMessage.classList.contains('error')) {
+        pollTimer = setInterval(() => poll(created.status_url).catch(showClientError), 1200);
+      }
+    } catch (error) {
+      showClientError(error);
+    }
+  });
+
+  function showClientError(error) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    statusTitle.textContent = 'Có lỗi';
+    statusMessage.textContent = error && error.message ? error.message : 'Không thể kết nối server.';
+    statusMessage.classList.add('error');
+    button.disabled = false;
+    button.textContent = 'Thử lại';
+  }
+
+  bootstrap();
+})();
+</script>
+</body>
+</html>
