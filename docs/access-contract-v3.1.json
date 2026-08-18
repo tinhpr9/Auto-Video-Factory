@@ -1,0 +1,24 @@
+{
+  "version": "0.3.1",
+  "auth": {
+    "mode": "optional-private-access-code",
+    "token_transport": "Authorization: Bearer <opaque-session-token>",
+    "access_code_transport": "POST /api/session JSON body only",
+    "rules": [
+      "When AVF_ACCESS_CODE is configured, protected API routes reject missing or invalid bearer tokens with 401.",
+      "When AVF_PROVIDER=openai, AVF_ACCESS_CODE is mandatory and must be at least 12 characters.",
+      "Successful login returns an opaque expiring session token; the raw access code is never returned.",
+      "Failed login attempts are rate-limited and generation requests have a per-session hourly quota.",
+      "Health and the HTML shell remain public; generation/config/job/video APIs are protected when auth is enabled."
+    ]
+  },
+  "paths": {
+    "GET /api/session": {"public": true, "response": ["auth_required", "authenticated"]},
+    "POST /api/session": {"public": true, "request": ["code"], "response": ["token", "expires_in_seconds"], "errors": [401, 429]},
+    "DELETE /api/session": {"bearer": true, "response": 204},
+    "GET /api/config": {"bearer": true},
+    "POST /api/jobs": {"bearer": true, "errors": [401, 429]},
+    "GET /api/jobs/{job_id}": {"bearer": true},
+    "GET /api/jobs/{job_id}/video": {"bearer": true}
+  }
+}
