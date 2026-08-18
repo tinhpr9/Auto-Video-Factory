@@ -241,13 +241,158 @@ class TestFlowClipStaging:
         pack_a = plan_flow_scenes(topic_a)
         pack_b = plan_flow_scenes(topic_b)
 
-        # Check that prompts contain topic elements and differ materially
-        prompts_a = [s.prompt for s in pack_a.scenes]
-        prompts_b = [s.prompt for s in pack_b.scenes]
+        # Topic must drive materially different action and narrative_role fields
+        actions_a = [s.action for s in pack_a.scenes]
+        actions_b = [s.action for s in pack_b.scenes]
+        roles_a = [s.narrative_role for s in pack_a.scenes]
+        roles_b = [s.narrative_role for s in pack_b.scenes]
 
-        assert prompts_a != prompts_b
-        assert any("kiếm tu" in p or "Thanh Vân Môn" in p or "kiếm hồn" in p for p in prompts_a)
-        assert any("đan sư" in p or "Kim Đan" in p or "luyện đan" in p for p in prompts_b)
+        assert actions_a != actions_b, "Topics must produce different scene actions"
+        assert roles_a != roles_b, "Topics must produce different narrative roles"
+        # Sword topic: hero scene must be sword-type awakening
+        assert any("sword" in a.lower() or "sword soul" in a.lower() or "kiếm" in a.lower()
+                   for a in actions_a), "Sword topic must produce sword-related actions"
+        # Pill topic: hero scene must be alchemy-type awakening
+        assert any("dan" in a.lower() or "pill" in a.lower() or "alchemy" in a.lower() or "furnace" in a.lower()
+                   for a in actions_b), "Pill topic must produce alchemy-related actions"
+
+    # -----------------------------------------------------------------------
+    # Bug 3 (RED): topic must materially change scene ACTIONS — not just appended
+    # -----------------------------------------------------------------------
+
+    def test_topic_changes_scene_actions_not_just_appended(self):
+        """Scene narrative_role and action fields must reflect topic, not fixed templates."""
+        topic_sword = "Một kiếm tu thức tỉnh kiếm hồn thần cấp"
+        topic_pill = "Một đan sư luyện Cửu Chuyển Kim Đan phá thiên kiếp"
+
+        pack_sword = plan_flow_scenes(topic_sword)
+        pack_pill = plan_flow_scenes(topic_pill)
+
+        # Actions from pack must NOT be identical across topics
+        actions_sword = [s.action for s in pack_sword.scenes]
+        actions_pill = [s.action for s in pack_pill.scenes]
+        assert actions_sword != actions_pill, (
+            "topic must materially change scene actions, not just be appended as string"
+        )
+
+    # -----------------------------------------------------------------------
+    # Bug 1 (RED): exact filename set — aliases/extras/duplicates must fail
+    # -----------------------------------------------------------------------
+
+    def test_exact_filename_set_rejects_alias_names(self, tmp_path):
+        """scene_06.mp4 (underscore) must be REJECTED — only exact scene06.mp4 is valid."""
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        staged_dir = tmp_path / "staged"
+        for i in range(1, 6):
+            (input_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+        # scene_06.mp4 with underscore — must NOT be accepted as scene06.mp4
+        (input_dir / "scene_06.mp4").write_bytes(b"dummy")
+
+        with patch("auto_video_factory.flow_planner.validate_clip", return_value=True), \
+             patch("auto_video_factory.flow_planner.strip_clip_audio", side_effect=lambda inp, out: out.write_bytes(b"clean")):
+            with pytest.raises(ValueError, match=r"Unexpected mp4 files"):
+                validate_and_stage_flow_clips(input_dir, staged_dir, expected_scene_count=6)
+
+    def test_exact_filename_set_rejects_extra_mp4(self, tmp_path):
+        """Extra mp4 files beyond the expected set must cause rejection."""
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        staged_dir = tmp_path / "staged"
+        # Correct 6 files + 1 extra
+        for i in range(1, 7):
+            (input_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+        (input_dir / "bonus_clip.mp4").write_bytes(b"extra")
+
+        with patch("auto_video_factory.flow_planner.validate_clip", return_value=True), \
+             patch("auto_video_factory.flow_planner.strip_clip_audio", side_effect=lambda inp, out: out.write_bytes(b"clean")):
+            with pytest.raises(ValueError, match="Unexpected mp4 files"):
+                validate_and_stage_flow_clips(input_dir, staged_dir, expected_scene_count=6)
+
+    def test_exact_filename_set_rejects_foo_prefix(self, tmp_path):
+        """foo_scene06.mp4 must be REJECTED — only exact scene06.mp4 is valid."""
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        staged_dir = tmp_path / "staged"
+        for i in range(1, 6):
+            (input_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+        (input_dir / "foo_scene06.mp4").write_bytes(b"dummy")
+
+        with patch("auto_video_factory.flow_planner.validate_clip", return_value=True), \
+             patch("auto_video_factory.flow_planner.strip_clip_audio", side_effect=lambda inp, out: out.write_bytes(b"clean")):
+            with pytest.raises(ValueError, match=r"Unexpected mp4 files"):
+                validate_and_stage_flow_clips(input_dir, staged_dir, expected_scene_count=6)
+
+    def test_exact_filename_set_passes_exact_six(self, tmp_path):
+        """Exactly scene01.mp4..scene06.mp4 must succeed."""
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        staged_dir = tmp_path / "staged"
+        for i in range(1, 7):
+            (input_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+
+        with patch("auto_video_factory.flow_planner.validate_clip", return_value=True), \
+             patch("auto_video_factory.flow_planner.strip_clip_audio",
+                   side_effect=lambda inp, out: (out.write_bytes(b"clean"), out)[1]):
+            result = validate_and_stage_flow_clips(input_dir, staged_dir, expected_scene_count=6)
+        assert len(result) == 6
+
+    # -----------------------------------------------------------------------
+    # Bug 2 (RED): ffprobe failure must fail closed
+    # -----------------------------------------------------------------------
+
+    def test_strip_clip_audio_fails_closed_on_ffprobe_unavailable(self, tmp_path):
+        """If ffprobe is unavailable (FileNotFoundError), strip must fail closed."""
+        input_clip = tmp_path / "input.mp4"
+        input_clip.write_bytes(b"video")
+        output_clip = tmp_path / "output.mp4"
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "ffmpeg":
+                output_clip.write_bytes(b"stripped video")
+                return MagicMock(returncode=0, stderr="")
+            # ffprobe not available
+            raise FileNotFoundError("ffprobe: command not found")
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            with pytest.raises(RuntimeError, match="Fail-closed.*ffprobe"):
+                strip_clip_audio(input_clip, output_clip)
+        assert not output_clip.exists()
+
+    def test_strip_clip_audio_fails_closed_on_malformed_ffprobe_json(self, tmp_path):
+        """Malformed ffprobe JSON must cause fail-closed RuntimeError."""
+        input_clip = tmp_path / "input.mp4"
+        input_clip.write_bytes(b"video")
+        output_clip = tmp_path / "output.mp4"
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "ffmpeg":
+                output_clip.write_bytes(b"stripped video")
+                return MagicMock(returncode=0, stderr="")
+            return MagicMock(returncode=0, stdout="NOT VALID JSON {{{{", stderr="")
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            with pytest.raises(RuntimeError, match="Fail-closed.*malformed"):
+                strip_clip_audio(input_clip, output_clip)
+        assert not output_clip.exists()
+
+    def test_strip_clip_audio_fails_closed_on_ffprobe_timeout(self, tmp_path):
+        """ffprobe timeout must cause fail-closed RuntimeError."""
+        import subprocess as _subprocess
+        input_clip = tmp_path / "input.mp4"
+        input_clip.write_bytes(b"video")
+        output_clip = tmp_path / "output.mp4"
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "ffmpeg":
+                output_clip.write_bytes(b"stripped video")
+                return MagicMock(returncode=0, stderr="")
+            raise _subprocess.TimeoutExpired(cmd, 10)
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            with pytest.raises(RuntimeError, match="Fail-closed.*ffprobe"):
+                strip_clip_audio(input_clip, output_clip)
+        assert not output_clip.exists()
 
     def test_duration_credit_consistency_all_modes_and_durations(self):
         for dur, expected_scenes in [(45, 6), (60, 6), (90, 9)]:

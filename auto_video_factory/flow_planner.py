@@ -141,7 +141,176 @@ class FlowScenePack:
 
 
 # ===========================================================================
-# 4. Flow Scene Planner
+# 4. Topic-Driven Scene Template Builder
+# ===========================================================================
+
+def _build_topic_scenes(
+    topic: str,
+    scene_count: int,
+) -> list[tuple[int, str, str, str, str, str]]:
+    """
+    Build a scene narrative template driven by the topic string.
+
+    Each tuple: (idx, narrative_role, env_desc, action_desc, cam_desc, continuity)
+
+    The topic is parsed for protagonist archetype keywords and story arc signals,
+    then used to inject materially different roles and actions into the template
+    while keeping Character Bible visual continuity.
+    """
+    t = topic.lower()
+
+    # Detect protagonist archetype from topic keywords
+    if any(k in t for k in ("đan sư", "kim đan", "luyện đan", "đan lô", "đan phương")):
+        archetype = "alchemist"
+        awakening_role = "Divine Pill Awakening (Hero Scene)"
+        awakening_env = "Ancient alchemy hall, towering Dan furnace billowing celestial fire, alchemical runes swirling"
+        awakening_action = "Protagonist channeling condensed spiritual qi into Dan furnace, golden Dan vortex exploding outward, cracking the ancient seal"
+        mastery_role = "Nine-Turn Dan Refinement"
+        mastery_env = "Solitary stone chamber filled with medicinal cauldrons and floating spirit herbs"
+        mastery_action = "Protagonist refining the Ninth-Turn Golden Dan with trembling hands, divine qi spiraling, breakthrough imminent"
+        exile_role = "Framed by Alchemist Rivals & Cast Out"
+        exile_action = "Protagonist stripped of alchemy hall rank token, standing outside the blazing hall doors with quiet, lethal resolve"
+        return_role = "Return to Alchemy Sect with Supreme Dan"
+        return_action = "Protagonist striding up jade steps carrying a glowing Dan vial, spiritual pressure forcing rival alchemists to kneel"
+        climax_role = "Sect Judgment & Dan Proof"
+        climax_action = "Protagonist shattering the elder's false accusation by releasing the Ninth-Turn Dan — golden celestial shockwave silencing the sect plaza"
+    elif any(k in t for k in ("kiếm tu", "kiếm hồn", "kiếm đạo", "kiếm ý", "kiếm khí", "thanh kiếm")):
+        archetype = "swordmaster"
+        awakening_role = "Sword Soul Awakening (Hero Scene)"
+        awakening_env = "Celestial mountain peak split by lightning, ancient sword seal glowing crimson-gold on stone altar"
+        awakening_action = "Protagonist's sword soul erupting from collapsed dantian, divine sword intent shredding the sky, eyes blazing gold"
+        mastery_role = "Heaven-Splitting Sword Intent Mastery"
+        mastery_env = "High cliff over endless cloud ocean, howling celestial wind"
+        mastery_action = "Protagonist executing supreme sword form, azure-gold sword qi slashing the cloud ocean in half"
+        exile_role = "Expelled from Sword Sect & Cast Into Valley"
+        exile_action = "Protagonist cast down the mountain steps, sword broken in front of sect gate, eyes cold and undefeated"
+        return_role = "Sovereign Return to Sword Sect"
+        return_action = "Protagonist ascending the sect stairs, sword soul aura radiating so powerfully that stone steps crack under each step"
+        climax_role = "Sword Sect Confrontation & Dominance"
+        climax_action = "Protagonist drawing ancestral sword, releasing a divine sword dao field that forces every elder and disciple to their knees"
+    elif any(k in t for k in ("thể tu", "thể đạo", "thân thể", "cơ thể", "kim cương thể")):
+        archetype = "body_cultivator"
+        awakening_role = "Diamond Body Awakening (Hero Scene)"
+        awakening_env = "Underground thunder pool, violet celestial lightning pouring down on protagonist's body"
+        awakening_action = "Protagonist's diamond body activating, golden runes igniting across skin, lightning absorbed, body radiating blinding sovereignty"
+        mastery_role = "Ten Thousand Ton Body Refinement"
+        mastery_env = "Ancient volcano crater, rivers of molten spirit fire"
+        mastery_action = "Protagonist standing in molten fire, body glowing gold, each breath drawing fire qi into the sacred marrow"
+        exile_role = "Cast Out as Cripple, Sect Mark Burned Off"
+        exile_action = "Protagonist kneeling as sect brand is burned from wrist, rising slowly with iron-cold conviction"
+        return_role = "Unbreakable Return"
+        return_action = "Protagonist walking up to the sect gate, each footstep cracking the stone plaza, golden aura forcing guards back"
+        climax_role = "Body Dao Proof vs Sect Elders"
+        climax_action = "Protagonist catching elder's full-force strike bare-handed, golden body unscathed, elders staggering backward in disbelief"
+    else:
+        # Generic cultivation archetype — still topic-driven via topic phrase in actions
+        topic_phrase = topic.strip()[:60]
+        archetype = "cultivator"
+        awakening_role = "Ancient Power Awakening (Hero Scene)"
+        awakening_env = "Celestial storm gathering over mountain chasm, glowing golden runes shattering the darkness"
+        awakening_action = (
+            f"Ancient dragon spirit seal awakening as protagonist channels the story of '{topic_phrase}': "
+            "golden azure light bursting from protagonist's chest, eyes igniting with sovereign will"
+        )
+        mastery_role = "Sovereign Technique Mastery"
+        mastery_env = "High mountain cliff over ocean of clouds"
+        mastery_action = (
+            f"Protagonist executing signature power born from '{topic_phrase}': "
+            "azure-gold technique aura splitting the cloud layer in a sweeping arc"
+        )
+        exile_role = "Unjust Expulsion & Rejection"
+        exile_action = (
+            f"Protagonist cast out because of the conflict in '{topic_phrase}': "
+            "standing alone at the sect gate, stripping off disciple token with cold unbreakable resolve"
+        )
+        return_role = "Majestic Return to Sect"
+        return_action = (
+            "Protagonist returning transformed by the journey, "
+            "flowing indigo robe billowing with immense azure spiritual pressure"
+        )
+        climax_role = "Sect Confrontation & Climax"
+        climax_action = (
+            "Protagonist facing the sect elders, drawing celestial blade, "
+            "golden-azure spiritual shockwave forcing crowd to kneel"
+        )
+
+    # Build 6-scene or 9-scene arc
+    if scene_count == 9:
+        return [
+            (1, "Sect World Establishing Shot",
+             "Grand mountain sect towering into clouds, floating ancient pavilions, swirling misty waterfalls",
+             "Wide establishing aerial view of the immortal sect world at dawn",
+             "Slow cinematic aerial descent, 9:16 vertical composition", "None (Opening Scene)"),
+            (2, exile_role,
+             "Cold stone courtyard outside the grand sect gate, winter mist",
+             exile_action,
+             "Medium portrait tracking shot, focused on determined eyes", "Sect backdrop"),
+            (3, "Wilderness Exile & Trial",
+             "Rugged mountain forest and desolate misty ravines, ancient spirit beasts lurking",
+             "Protagonist journeying through trials with calm perseverance, spirit energy slowly recovering",
+             "Wide cinematic tracking shot", "Transition from sect to wilderness"),
+            (4, "Solitary Cultivation Retreat",
+             "Dark secluded ancient cavern illuminated by glowing azure runes and crystal stalactites",
+             "Protagonist in deep lotus meditation, condensing swirling azure qi into awakening core",
+             "Low-angle slow push-in, shallow depth of field", "Isolated cultivation breakthrough building"),
+            (5, awakening_role,
+             awakening_env,
+             awakening_action,
+             "Dynamic cinematic orbiting shot with volumetric energy explosion", "Core awakening climax"),
+            (6, mastery_role,
+             mastery_env,
+             mastery_action,
+             "Dynamic sweeping camera tracking technique movements", "Post-awakening power mastery"),
+            (7, "Return Journey to Sect",
+             "Misty mountain pass leading back to civilization, spirit beasts parting the way",
+             "Protagonist walking with sovereign stride, environment reacting to immense spiritual pressure",
+             "Wide tracking shot", "Return journey begins"),
+            (8, return_role,
+             "Grand stone staircase leading back up to towering mountain sect gates, dawn light",
+             return_action,
+             "Low-angle following tracking shot from behind", "Arrival at sect gates"),
+            (9, climax_role,
+             "Grand sect plaza surrounded by disciples and elder pavilions, tension in the air",
+             climax_action,
+             "Heroic eye-level wide portrait shot, epic atmospheric lighting", "Climax confrontation payoff"),
+        ]
+    else:
+        # 6-scene arc (45s or 60s)
+        return [
+            (1, "Sect World Establishing Shot",
+             "Grand mountain sect towering into clouds, floating ancient pavilions, swirling misty waterfalls",
+             "Wide establishing view of the immortal sect mountain peak under morning dawn",
+             "Slow cinematic aerial descent, 9:16 vertical composition", "None (Opening Scene)"),
+            (2, exile_role,
+             "Cold snow-covered stone courtyard outside the grand sect gate",
+             exile_action,
+             "Medium portrait tracking shot focusing on determined eyes",
+             "Same sect mountain backdrop, mood transitions to cold winter snowfall"),
+            (3, "Solitary Cultivation Retreat",
+             "Dark secluded ancient cavern illuminated by glowing azure runes and crystal stalactites",
+             "Protagonist in deep lotus meditation, condensing swirling azure qi into awakening core",
+             "Low-angle slow push-in, shallow depth of field",
+             "Same protagonist in dark indigo robe, isolated from the sect"),
+            (4, awakening_role,
+             awakening_env,
+             awakening_action,
+             "Dynamic cinematic orbiting shot with volumetric energy explosion",
+             "Direct escalation from cave meditation, power erupts"),
+            (5, return_role,
+             "Grand stone staircase leading back up to the towering mountain sect gates",
+             return_action,
+             "Low-angle following tracking shot from behind and side",
+             "Protagonist now radiating sovereign ancient power"),
+            (6, climax_role,
+             "Grand sect plaza surrounded by disciples and elder pavilions",
+             climax_action,
+             "Heroic eye-level wide portrait shot, epic atmospheric lighting",
+             "Direct confrontation payoff of the return"),
+        ]
+
+
+# ===========================================================================
+# 5. Flow Scene Planner
 # ===========================================================================
 
 def plan_flow_scenes(
@@ -151,8 +320,9 @@ def plan_flow_scenes(
     flow_mode: str = DEFAULT_FLOW_MODE,
 ) -> FlowScenePack:
     """
-    Plan 5-7 structured narrative scenes for Google Flow with Character Bible
+    Plan structured narrative scenes for Google Flow with topic-driven Character Bible
     continuity and credit estimation.
+
     """
     if flow_mode not in FLOW_MODES:
         raise ValueError(f"Unknown flow_mode '{flow_mode}'. Must be one of {FLOW_MODES}")
@@ -161,43 +331,18 @@ def plan_flow_scenes(
     world = CHARACTER_BIBLE["world_style"]
     negatives = CHARACTER_BIBLE["negative_constraints"]
 
-    # Determine scene count and duration scaling
     if duration_seconds >= 90:
         total_scene_count = 9
         scene_target_sec = 10
-        raw_story_template = [
-            (1, "Sect Establishing Shot", "Grand mountain sect towering into clouds, floating ancient pavilions", "Wide establishing view of the immortal sect mountain peak under morning dawn", "Slow cinematic aerial descent, 9:16 vertical composition", "None (Opening Scene)"),
-            (2, "Unjust Expulsion & Rejection", "Cold snow-covered stone courtyard outside the grand sect gate", "Protagonist standing alone in snow, stripping off disciple token, looking back with cold resolve", "Medium portrait tracking shot focusing on determined eyes", "Same sect mountain backdrop"),
-            (3, "Wilderness Exile", "Rugged mountain forest and desolate misty ravines", "Protagonist journeying through ancient wilderness, facing trials with calm perseverance", "Wide cinematic tracking shot", "Transition from sect to wilderness"),
-            (4, "Solitary Cave Cultivation", "Dark secluded ancient cavern illuminated by glowing azure runes", "Protagonist sitting in lotus meditation, condensing swirling azure qi into core", "Low-angle slow push-in, shallow depth of field", "Secluded cultivation"),
-            (5, "Ancient Power Awakening (Hero Scene)", "Celestial storm gathering over mountain chasm, golden runes shattering darkness", "Ancient dragon spirit seal awakening, golden azure light bursting from protagonist's chest", "Dynamic cinematic orbiting shot with volumetric energy explosion", "Ancient awakening"),
-            (6, "Mastering Ancient Techniques", "High mountain cliff over ocean of clouds", "Protagonist practicing ancient sword forms, celestial azure blade aura slicing clouds", "Dynamic sweeping camera tracking blade movements", "Post-awakening mastery"),
-            (7, "Return Journey to Sect", "Misty mountain pass leading back to civilization", "Protagonist walking with sovereign stride, spirit beasts bowing along the path", "Wide tracking shot", "Return to sect"),
-            (8, "Majestic Return to Sect", "Grand stone staircase leading back up to towering mountain sect gates", "Protagonist walking calmly up stairs, robe billowing with immense azure spiritual pressure", "Low-angle following tracking shot", "Arrival at sect gate"),
-            (9, "Sect Confrontation & Climax", "Grand sect plaza surrounded by disciples and elder pavilions", "Protagonist facing sect elders, drawing celestial blade, golden-azure spiritual shockwave forcing crowd to kneel", "Heroic eye-level wide portrait shot", "Climax confrontation"),
-        ]
     elif duration_seconds >= 60:
         total_scene_count = 6
         scene_target_sec = 10
-        raw_story_template = [
-            (1, "Sect Establishing Shot", "Grand mountain sect towering into clouds, floating ancient pavilions, swirling misty waterfalls", "Wide establishing view of the immortal sect mountain peak under morning dawn", "Slow cinematic aerial descent, 9:16 vertical composition", "None (Opening Scene)"),
-            (2, "Unjust Expulsion & Rejection", "Cold snow-covered stone courtyard outside the grand sect gate", "Protagonist standing alone in snow, stripping off disciple token, looking back with cold unbreakable resolve", "Medium portrait tracking shot focusing on determined eyes", "Same sect mountain backdrop, mood transitions to cold winter snowfall"),
-            (3, "Solitary Cave Cultivation", "Dark secluded ancient cavern illuminated by glowing azure runes and crystal stalactites", "Protagonist sitting in lotus meditation, condensing swirling azure qi into core", "Low-angle slow push-in, shallow depth of field", "Same protagonist in dark indigo robe, isolated from the sect"),
-            (4, "Ancient Power Awakening (Hero Scene)", "Celestial storm gathering over mountain chasm, glowing golden runes shattering the darkness", "Ancient dragon spirit seal awakening, golden azure light bursting from protagonist's chest, eyes igniting", "Dynamic cinematic orbiting shot with volumetric energy explosion", "Direct escalation from cave meditation, core awakens"),
-            (5, "Majestic Return to Sect", "Grand stone staircase leading back up to the towering mountain sect gates", "Protagonist walking calmly up the stairs, flowing indigo robe billowing with immense azure spiritual pressure", "Low-angle following tracking shot from behind and side", "Same protagonist now radiating sovereign ancient power"),
-            (6, "Sect Confrontation & Climax", "Grand sect plaza surrounded by disciples and elder pavilions", "Protagonist facing the sect elders, drawing celestial blade, golden-azure spiritual shockwave forcing crowd to kneel", "Heroic eye-level wide portrait shot, epic atmospheric lighting", "Direct confrontation payoff of the return"),
-        ]
     else:  # 45s (default)
         total_scene_count = 6
         scene_target_sec = 8
-        raw_story_template = [
-            (1, "Sect Establishing Shot", "Grand mountain sect towering into clouds, floating ancient pavilions, swirling misty waterfalls", "Wide establishing view of the immortal sect mountain peak under morning dawn", "Slow cinematic aerial descent, 9:16 vertical composition", "None (Opening Scene)"),
-            (2, "Unjust Expulsion & Rejection", "Cold snow-covered stone courtyard outside the grand sect gate", "Protagonist standing alone in snow, stripping off disciple token, looking back with cold unbreakable resolve", "Medium portrait tracking shot focusing on determined eyes", "Same sect mountain backdrop, mood transitions to cold winter snowfall"),
-            (3, "Solitary Cave Cultivation", "Dark secluded ancient cavern illuminated by glowing azure runes and crystal stalactites", "Protagonist sitting in lotus meditation, condensing swirling azure qi into core", "Low-angle slow push-in, shallow depth of field", "Same protagonist in dark indigo robe, isolated from the sect"),
-            (4, "Ancient Power Awakening (Hero Scene)", "Celestial storm gathering over mountain chasm, glowing golden runes shattering the darkness", "Ancient dragon spirit seal awakening, golden azure light bursting from protagonist's chest, eyes igniting", "Dynamic cinematic orbiting shot with volumetric energy explosion", "Direct escalation from cave meditation, core awakens"),
-            (5, "Majestic Return to Sect", "Grand stone staircase leading back up to the towering mountain sect gates", "Protagonist walking calmly up the stairs, flowing indigo robe billowing with immense azure spiritual pressure", "Low-angle following tracking shot from behind and side", "Same protagonist now radiating sovereign ancient power"),
-            (6, "Sect Confrontation & Climax", "Grand sect plaza surrounded by disciples and elder pavilions", "Protagonist facing the sect elders, drawing celestial blade, golden-azure spiritual shockwave forcing crowd to kneel", "Heroic eye-level wide portrait shot, epic atmospheric lighting", "Direct confrontation payoff of the return"),
-        ]
+
+    # Build topic-driven scene narrative from topic string
+    raw_story_template = _build_topic_scenes(topic, total_scene_count)
 
     scenes: list[FlowScene] = []
     total_credits = 0
@@ -232,11 +377,9 @@ def plan_flow_scenes(
                 model = "gemini-omni-flash"
                 credits = omni_cost
 
-        topic_snippet = topic.strip()
         prompt = (
             f"9:16 vertical cinematic shot of a {protag['identity']} ({protag['features']}), "
             f"wearing {protag['attire']}. Scene {idx}: {role}. "
-            f"Story context: {topic_snippet}. "
             f"Setting: {env_desc}. Action: {action_desc}. "
             f"Visual style: {world['genre']}, {world['lighting']}, palette of {world['palette']}. "
             f"Camera: {cam_desc}. Quality: photorealistic, hyper-detailed textures, volumetric lighting."
@@ -373,7 +516,7 @@ def strip_clip_audio(input_clip: Path, output_clip: Path) -> Path:
             "Native audio must not leak into production."
         )
 
-    # Verify no audio streams remain
+    # Verify no audio streams remain — MUST be fail-closed
     cmd_probe = [
         "ffprobe", "-v", "error",
         "-select_streams", "a",
@@ -383,17 +526,39 @@ def strip_clip_audio(input_clip: Path, output_clip: Path) -> Path:
     ]
     try:
         probe_res = subprocess.run(cmd_probe, capture_output=True, text=True, timeout=10)
-        if probe_res.returncode == 0:
-            data = json.loads(probe_res.stdout)
-            if data.get("streams"):
-                output_clip.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"Fail-closed: Audio streams detected in {output_clip} after audio stripping."
-                )
-    except Exception as e:
-        if isinstance(e, RuntimeError):
-            raise
-        # ffprobe verification skipped if not available, but output was created successfully
+    except (FileNotFoundError, OSError) as exc:
+        output_clip.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Fail-closed: ffprobe unavailable for audio verification of {output_clip}: {exc}. "
+            "Cannot confirm zero-audio state."
+        ) from exc
+    except subprocess.TimeoutExpired:
+        output_clip.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Fail-closed: ffprobe timed out verifying {output_clip}. "
+            "Cannot confirm zero-audio state."
+        )
+
+    if probe_res.returncode != 0:
+        output_clip.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Fail-closed: ffprobe returned error (code {probe_res.returncode}) "
+            f"for {output_clip}: {probe_res.stderr.strip()}."
+        )
+
+    try:
+        data = json.loads(probe_res.stdout)
+    except json.JSONDecodeError as exc:
+        output_clip.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Fail-closed: malformed ffprobe JSON output for {output_clip}: {exc}."
+        ) from exc
+
+    if data.get("streams"):
+        output_clip.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Fail-closed: Audio streams detected in {output_clip} after audio stripping."
+        )
 
     return output_clip
 
@@ -427,42 +592,49 @@ def validate_and_stage_flow_clips(
     expected_scene_count: int = 6,
 ) -> list[Path]:
     """
-    Scan input_dir for scene clips (scene01.mp4..scene06.mp4), verify exact scene set,
-    strip audio (fail closed), and stage in staged_dir.
-    Returns list of clean staged clips.
+    Validate exact scene filename set (scene01.mp4..scene0N.mp4), strip audio
+    fail-closed, and stage in staged_dir.
+
+    Exact filename policy:
+    - Only files named exactly scene01.mp4..scene{N:02d}.mp4 are accepted.
+    - Any file whose name is not in the exact expected set raises ValueError.
+    - Regex aliasing (scene_01.mp4, foo_scene01.mp4) is REJECTED.
+    - Duplicate scene numbers or extra files are REJECTED.
+
+    Returns list of clean staged clip Paths.
     """
     if not input_dir.exists():
         raise ValueError(f"Missing required Flow scenes: Input directory '{input_dir}' does not exist.")
 
-    expected_files = [f"scene{i:02d}.mp4" for i in range(1, expected_scene_count + 1)]
+    expected_files = {f"scene{i:02d}.mp4" for i in range(1, expected_scene_count + 1)}
     raw_files = list(input_dir.glob("*.mp4"))
+    found_names = {p.name for p in raw_files}
 
-    # Map found files by normalized scene number
-    found_scenes: dict[int, Path] = {}
-    for p in raw_files:
-        m = re.search(r"scene[_\-]?0*(\d+)", p.stem.lower())
-        if m:
-            s_num = int(m.group(1))
-            if 1 <= s_num <= expected_scene_count:
-                found_scenes[s_num] = p
+    # Reject any file not in the exact expected set
+    unexpected = found_names - expected_files
+    if unexpected:
+        raise ValueError(
+            f"Unexpected mp4 files in input directory: {sorted(unexpected)}. "
+            f"Expected exactly: {sorted(expected_files)}."
+        )
 
-    missing = [f"scene{i:02d}.mp4" for i in range(1, expected_scene_count + 1) if i not in found_scenes]
+    missing = sorted(expected_files - found_names)
     if missing:
         raise ValueError(
             f"Missing required Flow scenes: {missing}. "
-            f"Expected exactly {expected_scene_count} scenes ({expected_files})"
+            f"Expected exactly {expected_scene_count} scenes ({sorted(expected_files)})"
         )
 
     staged_dir.mkdir(parents=True, exist_ok=True)
     staged_clips: list[Path] = []
 
     for idx in range(1, expected_scene_count + 1):
-        raw_clip = found_scenes[idx]
+        exact_name = f"scene{idx:02d}.mp4"
+        raw_clip = input_dir / exact_name
         if not validate_clip(raw_clip):
             raise ValueError(f"Corrupt or invalid video clip: {raw_clip}")
 
-        clean_name = f"scene{idx:02d}.mp4"
-        out_path = staged_dir / clean_name
+        out_path = staged_dir / exact_name
         strip_clip_audio(raw_clip, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
             raise RuntimeError(f"Fail-closed: Staged clip {out_path} is empty or missing after audio stripping.")

@@ -166,18 +166,24 @@ jobs:
         run: |
           SESSION_TAG="flow-session-${{ github.run_id }}"
           echo "Creating Draft Release for Android Flow Mailbox: $SESSION_TAG"
-          
+
           gh release create "$SESSION_TAG" \
             --draft \
             --title "Flow Ingress Session ${{ github.run_id }}" \
             --notes-file flow_pack_output/flow_checklist.txt \
             flow_pack_output/flow_prompts.txt \
             flow_pack_output/flow_scene_pack.json \
-            flow_pack_output/flow_checklist.txt || echo "::warning::Draft release creation skipped"
+            flow_pack_output/flow_checklist.txt
+
+          # Verify the release was actually created before exposing the URL
+          gh release view "$SESSION_TAG" --json tagName,isDraft | grep '"isDraft":true' || {
+            echo "::error::Draft release '$SESSION_TAG' was not found after creation. Aborting."
+            exit 1
+          }
 
           UPLOAD_URL="https://github.com/${{ github.repository }}/releases/edit/$SESSION_TAG"
           echo "FLOW_UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
-          
+
           # Add mobile workflow summary
           echo "## 📱 Google Flow Mobile Ingress Session" >> $GITHUB_STEP_SUMMARY
           echo "**Session Tag:** \`$SESSION_TAG\`" >> $GITHUB_STEP_SUMMARY
@@ -286,8 +292,9 @@ jobs:
           # Download from GitHub Release mailbox if flow_session is specified
           if [ -n "$AVF_FLOW_SESSION" ]; then
             echo "Downloading Flow clips from session release: $AVF_FLOW_SESSION"
-            gh release download "$AVF_FLOW_SESSION" -p "*.mp4" -D "$flow_input" || true
+            gh release download "$AVF_FLOW_SESSION" -p "*.mp4" -D "$flow_input"
           fi
+
 
           python - << 'PYEOF'
           import os, sys

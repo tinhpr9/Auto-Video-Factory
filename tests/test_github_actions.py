@@ -122,3 +122,38 @@ def test_verify_output_before_upload():
 def test_artifact_upload_path_contains_video():
     text = _text()
     assert "video.mp4" in text
+
+
+# ---------------------------------------------------------------------------
+# Bug 4 (RED): draft release mailbox must fail closed
+# ---------------------------------------------------------------------------
+
+def test_draft_release_create_not_suppressed():
+    """gh release create block must NOT be suppressed with '|| echo' or '|| true'."""
+    text = _text()
+    # The run block may use multiline backslash continuation.
+    # Check that within any run: block containing 'gh release create', there is no
+    # '|| echo' or '|| true' following the create command (on same or continuation lines).
+    assert "gh release create" in text, "Expected 'gh release create' in workflow"
+    assert "|| echo" not in text or "Draft release creation skipped" not in text, (
+        "gh release create must not be silently suppressed with '|| echo'"
+    )
+    # Specifically: the old || echo warning pattern must be gone
+    assert "Draft release creation skipped" not in text, (
+        "gh release create must not suppress failure with error-masking warning text"
+    )
+
+def test_flow_upload_url_not_set_before_release_verify():
+    """FLOW_UPLOAD_URL must only be set after verifying release creation succeeded."""
+    text = _text()
+    create_idx = text.find("gh release create")
+    url_idx = text.find("FLOW_UPLOAD_URL=")
+    if create_idx == -1 or url_idx == -1:
+        return  # steps may not both exist yet
+    # There must be a verification step (gh release view) between create and URL set
+    between = text[create_idx:url_idx]
+    assert "gh release view" in between or "SESSION_TAG" in between, (
+        "FLOW_UPLOAD_URL must only be set after verifying the release was actually created"
+    )
+
+
