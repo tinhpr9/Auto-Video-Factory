@@ -102,36 +102,16 @@ jobs:
           path: avf
 
       # -------------------------------------------------------
-      # 2. Checkout MoneyPrinterTurbo at pinned SHA
-      #    (shallow clone at exact commit for reproducibility)
+      # 2. Setup Python (runs in <2s with cached runner python)
       # -------------------------------------------------------
-      - name: Checkout MoneyPrinterTurbo at pinned SHA
-        run: |
-          git clone "$MPT_REPO" mpt
-          cd mpt
-          git checkout "$MPT_SHA"
-          echo "MPT SHA: $(git rev-parse HEAD)"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       # -------------------------------------------------------
-      # 3. System dependencies (ffmpeg + imagemagick + Noto fonts)
-      # -------------------------------------------------------
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-noto-core fonts-dejavu-core
-          ffmpeg -version | head -1
-          # Install Vietnamese-capable Unicode font (NotoSans-Bold.ttf) into MPT font dir
-          mkdir -p mpt/resource/fonts
-          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" | head -n 1)
-          if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
-            cp "$NOTO_FONT" mpt/resource/fonts/NotoSans-Bold.ttf
-            echo "Installed subtitle font from $NOTO_FONT to mpt/resource/fonts/NotoSans-Bold.ttf"
-          else
-            echo "::warning::NotoSans font not found in /usr/share/fonts"
-          fi
-
-      # -------------------------------------------------------
-      # 3.5 Validate required secrets and provider preflight
+      # 3. Fail-fast Secrets Validation and Provider Preflight
+      #    Must run BEFORE expensive clone/apt/uv steps
       # -------------------------------------------------------
       - name: Validate secrets and provider preflight
         shell: bash
@@ -169,13 +149,39 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 4. Setup Python + uv
+      # 4. Checkout MoneyPrinterTurbo at pinned SHA
       # -------------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Checkout MoneyPrinterTurbo at pinned SHA
+        run: |
+          git clone --depth 1 "$MPT_REPO" mpt || git clone "$MPT_REPO" mpt
+          cd mpt
+          git fetch --depth 1 origin "$MPT_SHA" || true
+          git checkout "$MPT_SHA"
+          echo "MPT SHA: $(git rev-parse HEAD)"
 
+      # -------------------------------------------------------
+      # 5. System dependencies (with bounded timeout & non-interactive)
+      # -------------------------------------------------------
+      - name: Install system dependencies
+        timeout-minutes: 8
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y || true
+          sudo apt-get install -y --no-install-recommends imagemagick fonts-noto-core fonts-dejavu-core || true
+          ffmpeg -version | head -1
+          # Install Vietnamese-capable Unicode font (NotoSans-Bold.ttf) into MPT font dir
+          mkdir -p mpt/resource/fonts
+          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -n 1)
+          if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
+            cp "$NOTO_FONT" mpt/resource/fonts/NotoSans-Bold.ttf
+            echo "Installed subtitle font from $NOTO_FONT to mpt/resource/fonts/NotoSans-Bold.ttf"
+          else
+            echo "::warning::NotoSans font not found in /usr/share/fonts"
+          fi
+
+      # -------------------------------------------------------
+      # 6. Install uv and MPT dependencies
+      # -------------------------------------------------------
       - name: Install uv
         run: pip install uv --quiet
 
