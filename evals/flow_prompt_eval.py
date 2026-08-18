@@ -28,6 +28,8 @@ def main() -> int:
     result = {
         "flow_mode": pack.flow_mode,
         "total_scenes": pack.total_scenes,
+        "requested_duration_seconds": pack.requested_duration_seconds,
+        "target_total_seconds": pack.target_total_seconds,
         "estimated_total_credits": pack.estimated_total_credits,
         "character_bible_summary": pack.character_bible_summary,
         "scenes": [s.to_dict() for s in pack.scenes],

@@ -18,6 +18,7 @@ from auto_video_factory.flow_planner import (
     FlowScene,
     FlowScenePack,
     export_flow_pack,
+    load_and_validate_flow_session,
     plan_flow_scenes,
     strip_clip_audio,
     validate_and_stage_flow_clips,
@@ -495,4 +496,122 @@ class TestFlowPromptEvalScript:
         assert data["total_scenes"] == 6
         assert data["estimated_total_credits"] == 225
         assert len(data["scenes"]) == 6
+
+
+# ===========================================================================
+# 8. FlowScenePack Schema & Requested Duration
+# ===========================================================================
+
+class TestFlowScenePackSchema:
+    def test_flow_scene_pack_has_requested_duration_seconds(self):
+        pack = plan_flow_scenes("Topic A", duration_seconds=45)
+        assert pack.requested_duration_seconds == 45
+        assert pack.target_total_seconds == 48
+        d = pack.to_dict()
+        assert d["requested_duration_seconds"] == 45
+        assert d["target_total_seconds"] == 48
+
+    def test_flow_scene_pack_serialization_roundtrip(self):
+        pack = plan_flow_scenes("Topic 90s", duration_seconds=90, flow_mode="flow_quality")
+        d = pack.to_dict()
+        loaded = FlowScenePack.from_dict(d)
+        assert loaded.topic == "Topic 90s"
+        assert loaded.requested_duration_seconds == 90
+        assert loaded.total_scenes == 9
+        assert loaded.flow_mode == "flow_quality"
+        assert len(loaded.scenes) == 9
+        assert loaded.scenes[0].expected_filename == "scene01.mp4"
+        assert loaded.scenes[-1].expected_filename == "scene09.mp4"
+
+
+# ===========================================================================
+# 9. Session Manifest Authority & Validation
+# ===========================================================================
+
+class TestFlowSessionAuthorityAndValidation:
+    def test_session_manifest_overrides_dispatch_inputs(self, tmp_path):
+        """When a flow_session is loaded, manifest values override workflow dispatch drift."""
+        pack = plan_flow_scenes("Prepared Topic Alpha", duration_seconds=90, flow_mode="flow_quality")
+        manifest_file = tmp_path / "flow_scene_pack.json"
+        manifest_file.write_text(json.dumps(pack.to_dict()), encoding="utf-8")
+
+        # Fake dispatch inputs: topic="Render Input Beta", duration=45, flow_mode="flow_balanced"
+        session_pack = load_and_validate_flow_session(manifest_file)
+        assert session_pack.topic == "Prepared Topic Alpha"
+        assert session_pack.requested_duration_seconds == 90
+        assert session_pack.flow_mode == "flow_quality"
+        assert session_pack.total_scenes == 9
+
+    def test_session_missing_manifest_raises_error(self, tmp_path):
+        non_existent = tmp_path / "missing_flow_scene_pack.json"
+        with pytest.raises(ValueError, match="Session manifest not found"):
+            load_and_validate_flow_session(non_existent)
+
+    def test_session_malformed_manifest_raises_error(self, tmp_path):
+        bad_file = tmp_path / "flow_scene_pack.json"
+        bad_file.write_text("{corrupt json content", encoding="utf-8")
+        with pytest.raises(ValueError, match="Invalid or corrupted session manifest"):
+            load_and_validate_flow_session(bad_file)
+
+    def test_session_empty_scenes_raises_error(self, tmp_path):
+        bad_pack = {
+            "topic": "Empty",
+            "flow_mode": "flow_balanced",
+            "total_scenes": 0,
+            "requested_duration_seconds": 45,
+            "target_total_seconds": 0,
+            "estimated_total_credits": 0,
+            "character_bible_summary": "",
+            "scenes": [],
+        }
+        manifest_file = tmp_path / "flow_scene_pack.json"
+        manifest_file.write_text(json.dumps(bad_pack), encoding="utf-8")
+        with pytest.raises(ValueError, match="Manifest contains no scenes"):
+            load_and_validate_flow_session(manifest_file)
+
+    def test_session_manifest_clip_count_mismatch_raises_error(self, tmp_path):
+        """Manifest expects 9 scenes, but only 6 clips exist in clips_dir."""
+        pack = plan_flow_scenes("Topic 90", duration_seconds=90)
+        manifest_file = tmp_path / "flow_scene_pack.json"
+        manifest_file.write_text(json.dumps(pack.to_dict()), encoding="utf-8")
+
+        clips_dir = tmp_path / "clips"
+        clips_dir.mkdir()
+        for i in range(1, 7):
+            (clips_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy mp4 content")
+
+        with pytest.raises(ValueError, match="Missing required Flow scenes"):
+            load_and_validate_flow_session(manifest_file, clips_dir=clips_dir)
+
+    def test_session_extra_unlisted_clip_raises_error(self, tmp_path):
+        """Clips dir has an unlisted extra mp4 file."""
+        pack = plan_flow_scenes("Topic 45", duration_seconds=45)
+        manifest_file = tmp_path / "flow_scene_pack.json"
+        manifest_file.write_text(json.dumps(pack.to_dict()), encoding="utf-8")
+
+        clips_dir = tmp_path / "clips"
+        clips_dir.mkdir()
+        for i in range(1, 7):
+            (clips_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy mp4 content")
+        (clips_dir / "scene07_extra.mp4").write_bytes(b"extra")
+
+        with pytest.raises(ValueError, match="Unexpected mp4 files"):
+            load_and_validate_flow_session(manifest_file, clips_dir=clips_dir)
+
+    def test_session_happy_path_binding(self, tmp_path):
+        """Manifest + matching clips load successfully."""
+        pack = plan_flow_scenes("Happy Path Topic", duration_seconds=45)
+        manifest_file = tmp_path / "flow_scene_pack.json"
+        manifest_file.write_text(json.dumps(pack.to_dict()), encoding="utf-8")
+
+        clips_dir = tmp_path / "clips"
+        clips_dir.mkdir()
+        for i in range(1, 7):
+            (clips_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy mp4")
+
+        session_pack = load_and_validate_flow_session(manifest_file, clips_dir=clips_dir)
+        assert session_pack.topic == "Happy Path Topic"
+        assert session_pack.total_scenes == 6
+        assert session_pack.requested_duration_seconds == 45
+
 

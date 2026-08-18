@@ -237,24 +237,74 @@ jobs:
             exit 1
           fi
 
+          # If flow_session is specified for flow_clips, download manifest and clips from session release
+          if [ "$AVF_VISUAL_PROVIDER" = "flow_clips" ] && [ -n "$AVF_FLOW_SESSION" ]; then
+            flow_input="$GITHUB_WORKSPACE/avf/storage/flow_videos"
+            mkdir -p "$flow_input"
+            echo "Downloading Flow session manifest and clips from release: $AVF_FLOW_SESSION"
+            gh release download "$AVF_FLOW_SESSION" \
+              --repo "${{ github.repository }}" \
+              -p "*.mp4" \
+              -p "flow_scene_pack.json" \
+              -D "$flow_input" || {
+                echo "::error::Failed to download Flow session release '$AVF_FLOW_SESSION'. FINAL_STATUS=INVALID_FLOW_SESSION"
+                exit 1
+              }
+          fi
+
           python - << 'PYEOF'
-          import os, sys
+          import os, sys, shutil
           from pathlib import Path
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
-          from auto_video_factory.flow_planner import plan_flow_scenes, export_flow_pack
+          from auto_video_factory.flow_planner import (
+              plan_flow_scenes,
+              export_flow_pack,
+              load_and_validate_flow_session,
+          )
 
           provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
+          session  = os.environ.get("AVF_FLOW_SESSION", "").strip()
           topic    = os.environ.get("AVF_TOPIC", "")
           duration = int(os.environ.get("AVF_DURATION", "45"))
           mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
 
-          print(f"Executing Preflight for Visual Provider: {provider} (Flow Mode: {mode})")
+          print(f"Executing Preflight for Visual Provider: {provider}")
 
           if provider == "flow_clips":
-              pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
               pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
-              paths = export_flow_pack(pack, pack_dir)
-              print(f"Generated Flow Scene Pack: {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
+              pack_dir.mkdir(parents=True, exist_ok=True)
+
+              if session:
+                  flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
+                  manifest_file = flow_input / "flow_scene_pack.json"
+                  try:
+                      session_pack = load_and_validate_flow_session(manifest_file, clips_dir=flow_input)
+                  except Exception as e:
+                      print(f"::error::Flow session validation failed for '{session}': {e}")
+                      print("FINAL_STATUS=INVALID_FLOW_SESSION")
+                      sys.exit(1)
+
+                  # Authoritative session manifest wins over dispatch drift
+                  shutil.copy2(manifest_file, pack_dir / "flow_scene_pack.json")
+                  print(f"Authoritative Session Pack Loaded from {session}:")
+                  print(f"  - Topic: {session_pack.topic}")
+                  print(f"  - Requested Duration: {session_pack.requested_duration_seconds}s")
+                  print(f"  - Mode: {session_pack.flow_mode}")
+                  print(f"  - Total Scenes: {session_pack.total_scenes}")
+
+                  # Export authoritative session variables to GITHUB_ENV so downstream steps use session values
+                  env_file = os.environ.get("GITHUB_ENV")
+                  if env_file:
+                      with open(env_file, "a", encoding="utf-8") as f:
+                          f.write(f"AVF_TOPIC={session_pack.topic}\n")
+                          f.write(f"AVF_DURATION={session_pack.requested_duration_seconds}\n")
+                          f.write(f"AVF_FLOW_MODE={session_pack.flow_mode}\n")
+                          f.write(f"EXPECTED_SCENES={session_pack.total_scenes}\n")
+              else:
+                  # Local developer path without flow_session
+                  pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+                  paths = export_flow_pack(pack, pack_dir)
+                  print(f"Generated Flow Scene Pack (Local): {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
 
           print("Preflight validation: OK")
           PYEOF

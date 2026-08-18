@@ -290,3 +290,30 @@ def test_draft_release_create_not_suppressed():
     assert "Draft release creation skipped" not in text, (
         "gh release create must not suppress failure with error-masking warning text"
     )
+
+
+# ---------------------------------------------------------------------------
+# Valid Finding: Flow session manifest authority & drift prevention
+# ---------------------------------------------------------------------------
+
+def test_flow_session_downloads_manifest_and_clips():
+    """When AVF_FLOW_SESSION is provided, render job must download flow_scene_pack.json
+    and not just *.mp4, so session metadata is preserved."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+    # Check that gh release download includes flow_scene_pack.json or downloads the pack
+    assert "flow_scene_pack.json" in render_job, (
+        "render job must download and read flow_scene_pack.json from flow_session"
+    )
+    assert "gh release download" in render_job
+
+
+def test_render_preflight_loads_flow_session_manifest_to_prevent_drift():
+    """Render job must load authoritative topic, duration, flow_mode from session manifest
+    when AVF_FLOW_SESSION is supplied, rather than using raw workflow dispatch inputs."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+    assert "load_and_validate_flow_session" in render_job or "load_flow_session" in render_job or "session_pack" in render_job, (
+        "render job must use authoritative session loader to prevent dispatch drift"
+    )
+

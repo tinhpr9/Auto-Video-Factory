@@ -123,6 +123,7 @@ class FlowScenePack:
     topic: str
     flow_mode: str
     total_scenes: int
+    requested_duration_seconds: int
     target_total_seconds: int
     estimated_total_credits: int
     character_bible_summary: str
@@ -133,11 +134,39 @@ class FlowScenePack:
             "topic": self.topic,
             "flow_mode": self.flow_mode,
             "total_scenes": self.total_scenes,
+            "requested_duration_seconds": self.requested_duration_seconds,
             "target_total_seconds": self.target_total_seconds,
             "estimated_total_credits": self.estimated_total_credits,
             "character_bible_summary": self.character_bible_summary,
             "scenes": [s.to_dict() for s in self.scenes],
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FlowScenePack:
+        scenes = [
+            FlowScene(**s) if isinstance(s, dict) else s
+            for s in data.get("scenes", [])
+        ]
+        req_dur = data.get("requested_duration_seconds")
+        if req_dur is None:
+            target_sec = data.get("target_total_seconds", 45)
+            if target_sec >= 90 or len(scenes) >= 9:
+                req_dur = 90
+            elif target_sec >= 60:
+                req_dur = 60
+            else:
+                req_dur = 45
+
+        return cls(
+            topic=data.get("topic", ""),
+            flow_mode=data.get("flow_mode", DEFAULT_FLOW_MODE),
+            total_scenes=int(data.get("total_scenes", len(scenes))),
+            requested_duration_seconds=int(req_dur),
+            target_total_seconds=int(data.get("target_total_seconds", 0)),
+            estimated_total_credits=int(data.get("estimated_total_credits", 0)),
+            character_bible_summary=data.get("character_bible_summary", ""),
+            scenes=scenes,
+        )
 
 
 # ===========================================================================
@@ -481,6 +510,7 @@ def plan_flow_scenes(
         topic=topic,
         flow_mode=flow_mode,
         total_scenes=len(scenes),
+        requested_duration_seconds=duration_seconds,
         target_total_seconds=total_seconds,
         estimated_total_credits=total_credits,
         character_bible_summary=summary_bible,
@@ -706,3 +736,61 @@ def validate_and_stage_flow_clips(
         staged_clips.append(out_path)
 
     return staged_clips
+
+
+def load_and_validate_flow_session(
+    manifest_path: Path,
+    clips_dir: Path | None = None,
+) -> FlowScenePack:
+    """
+    Load and validate a Flow session manifest (flow_scene_pack.json).
+    Ensures:
+    1. Manifest file exists and is non-empty.
+    2. Manifest JSON parses and conforms to FlowScenePack schema.
+    3. Scenes list is non-empty.
+    4. If clips_dir is provided, validates that clips_dir contains the exact expected filenames.
+
+    Returns the authoritative FlowScenePack.
+    Raises ValueError on invalid/corrupted manifest or mismatched clips.
+    """
+    if not manifest_path.exists():
+        raise ValueError(
+            f"Session manifest not found: '{manifest_path}'. "
+            "Ensure the flow_session release contains flow_scene_pack.json."
+        )
+
+    try:
+        raw_text = manifest_path.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
+    except Exception as exc:
+        raise ValueError(f"Invalid or corrupted session manifest at '{manifest_path}': {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid session manifest: Expected root JSON object, got {type(data).__name__}")
+
+    pack = FlowScenePack.from_dict(data)
+
+    if not pack.scenes or pack.total_scenes == 0:
+        raise ValueError(f"Invalid session manifest '{manifest_path}': Manifest contains no scenes.")
+
+    if clips_dir is not None and clips_dir.exists():
+        expected_files = {s.expected_filename for s in pack.scenes}
+        raw_files = list(clips_dir.glob("*.mp4"))
+        found_names = {p.name for p in raw_files}
+
+        unexpected = found_names - expected_files
+        if unexpected:
+            raise ValueError(
+                f"Unexpected mp4 files in session clips directory: {sorted(unexpected)}. "
+                f"Expected exactly: {sorted(expected_files)}."
+            )
+
+        missing = sorted(expected_files - found_names)
+        if missing:
+            raise ValueError(
+                f"Missing required Flow scenes: {missing}. "
+                f"Expected exactly {pack.total_scenes} scenes ({sorted(expected_files)})"
+            )
+
+    return pack
+
