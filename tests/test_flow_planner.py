@@ -614,4 +614,15 @@ class TestFlowSessionAuthorityAndValidation:
         assert session_pack.total_scenes == 6
         assert session_pack.requested_duration_seconds == 45
 
+    def test_session_nonexistent_clips_dir_raises_error(self, tmp_path):
+        """When a non-existent clips_dir is passed, raise ValueError."""
+        pack = plan_flow_scenes("Topic", duration_seconds=45)
+        manifest_file = tmp_path / "flow_scene_pack.json"
+        manifest_file.write_text(json.dumps(pack.to_dict()), encoding="utf-8")
+
+        non_existent_clips = tmp_path / "does_not_exist_clips"
+        with pytest.raises(ValueError, match="Session clips directory not found"):
+            load_and_validate_flow_session(manifest_file, clips_dir=non_existent_clips)
+
+
 

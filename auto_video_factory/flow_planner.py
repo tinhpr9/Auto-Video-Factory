@@ -773,7 +773,10 @@ def load_and_validate_flow_session(
     if not pack.scenes or pack.total_scenes == 0:
         raise ValueError(f"Invalid session manifest '{manifest_path}': Manifest contains no scenes.")
 
-    if clips_dir is not None and clips_dir.exists():
+    if clips_dir is not None:
+        if not clips_dir.exists():
+            raise ValueError(f"Session clips directory not found: '{clips_dir}'.")
+
         expected_files = {s.expected_filename for s in pack.scenes}
         raw_files = list(clips_dir.glob("*.mp4"))
         found_names = {p.name for p in raw_files}
