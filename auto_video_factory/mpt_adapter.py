@@ -71,15 +71,37 @@ def duration_to_paragraphs(duration: str) -> int:
     return result
 
 
+def duration_to_word_budget(duration: str) -> int:
+    """
+    Calculate the target word count for a given duration.
+    Empirical evidence from GitHub Actions runtime:
+    112 words of Vietnamese script generated 32 seconds of Edge TTS audio.
+    Speed = 112 / 32 = 3.5 words per second.
+
+    Args:
+        duration: One of "45", "60", "90".
+
+    Returns:
+        Integer target word count.
+    """
+    try:
+        dur_int = int(str(duration).strip())
+    except ValueError:
+        dur_int = 45
+
+    # 3.5 words per second based on vi-VN Edge TTS
+    return int(dur_int * 3.5)
+
+
 # ---------------------------------------------------------------------------
 # Voice mapping — workflow voice names → MPT Edge TTS identifiers
 # ---------------------------------------------------------------------------
 
 # All entries use Edge TTS (free, no API key required).
-# zh-CN voices are chosen for Vietnamese/Chinese xianxia content.
+# vi-VN voices are chosen for Vietnamese content.
 _VOICE_MAP: dict[str, str] = {
-    "marin": "zh-CN-XiaoxiaoNeural-Female",   # warm female narrator
-    "onyx": "zh-CN-YunxiNeural-Male",          # deep male narrator
+    "marin": "vi-VN-HoaiMyNeural",   # female Vietnamese narrator
+    "onyx": "vi-VN-NamMinhNeural",   # male Vietnamese narrator
 }
 
 
@@ -136,7 +158,13 @@ def build_cli_args(
         ValueError: On invalid duration or voice.
     """
     paragraphs = duration_to_paragraphs(duration)
+    word_budget = duration_to_word_budget(duration)
     mpt_voice = map_voice(voice)
+    
+    script_prompt = (
+        f"Viết kịch bản tiếng Việt có độ dài khoảng {word_budget} từ. "
+        f"Đây là kịch bản cho video ngắn {duration} giây."
+    )
 
     return [
         "--video-subject", topic,            # verbatim — safe via subprocess list
@@ -146,8 +174,10 @@ def build_cli_args(
         "--video-source", video_source,
         "--subtitle-enabled",
         "--subtitle-position", "bottom",
-        "--video-language", "zh-CN",
+        "--video-language", "vi-VN",
         "--bgm-type", "random",
+        "--match-materials-to-script",
+        "--video-script-prompt", script_prompt,
     ]
 
 
@@ -200,7 +230,7 @@ tls_verify = true
 video_source = "pexels"
 pexels_api_keys = {pexels_list}
 pixabay_api_keys = {pixabay_list}
-match_materials_to_script = false
+match_materials_to_script = true
 
 {llm_section}
 

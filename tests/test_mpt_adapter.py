@@ -56,17 +56,35 @@ class TestDurationMapping:
 
 
 # ===========================================================================
+# 2.5 duration -> word budget mapping
+# ===========================================================================
+
+class TestWordBudgetMapping:
+    @pytest.mark.parametrize("duration,expected", [
+        ("45", 157),
+        ("60", 210),
+        ("90", 315),
+    ])
+    def test_duration_to_word_budget(self, duration, expected):
+        assert mpt_adapter.duration_to_word_budget(duration) == expected
+
+    def test_fallback_duration(self):
+        assert mpt_adapter.duration_to_word_budget("invalid") == 157
+
+# ===========================================================================
 # 3. voice name mapping
 # ===========================================================================
 
 class TestVoiceMapping:
     def test_marin_maps_to_edge_tts(self):
         voice = mpt_adapter.map_voice("marin")
-        assert "zh-CN" in voice or "Xiaoxiao" in voice or "Neural" in voice
+        assert "vi-VN" in voice
+        assert "HoaiMy" in voice
 
     def test_onyx_maps_to_male_edge_tts(self):
         voice = mpt_adapter.map_voice("onyx")
-        assert "zh-CN" in voice or "Neural" in voice
+        assert "vi-VN" in voice
+        assert "NamMinh" in voice
 
     def test_unknown_voice_raises(self):
         with pytest.raises(ValueError, match=r"voice"):
@@ -133,7 +151,23 @@ class TestBuildCliArgs:
         args = self._args(topic=topic)
         assert topic in args
 
-    def test_no_secret_in_cli_args(self):
+    def test_video_language_vietnamese(self):
+        args = self._args()
+        assert "--video-language" in args
+        idx = args.index("--video-language")
+        assert args[idx + 1] == "vi-VN"
+        assert "zh-CN" not in args
+
+    def test_match_materials_included(self):
+        args = self._args()
+        assert "--match-materials-to-script" in args
+
+    def test_video_script_prompt_included(self):
+        args = self._args(duration="45")
+        assert "--video-script-prompt" in args
+        idx = args.index("--video-script-prompt")
+        assert "157 từ" in args[idx + 1]
+        assert "45 giây" in args[idx + 1]
         args = self._args()
         joined = " ".join(args)
         assert "sk-" not in joined

@@ -248,10 +248,33 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 9. Verify output video non-empty before upload
+      # 9. Verify output video duration before upload
       # -------------------------------------------------------
       - name: Verify output video
-        run: test -s mpt/avf_output/video.mp4 && echo "VERIFY PASS" || (echo "VERIFY FAIL" && exit 1)
+        run: |
+          test -s mpt/avf_output/video.mp4 || { echo "VERIFY FAIL: empty video"; exit 1; }
+          
+          EXPECTED=${AVF_DURATION}
+          ACTUAL=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 mpt/avf_output/video.mp4 || true)
+          ACTUAL_INT=${ACTUAL%.*}
+          
+          if ! [[ "$ACTUAL_INT" =~ ^[0-9]+$ ]]; then 
+            echo "::error::Invalid duration from ffprobe: $ACTUAL"
+            exit 1
+          fi
+          
+          echo "Expected duration: $EXPECTED seconds"
+          echo "Actual duration: $ACTUAL_INT seconds"
+          
+          DIFF=$(( ACTUAL_INT - EXPECTED ))
+          DIFF=${DIFF#-}
+          
+          if [ "$DIFF" -gt 5 ] && [ "$DIFF" -gt $(( EXPECTED / 10 )) ]; then
+            echo "::error::VERIFY FAIL: Video duration outside tolerance. Expected $EXPECTED, got $ACTUAL_INT"
+            exit 1
+          fi
+          
+          echo "VERIFY PASS"
 
       # -------------------------------------------------------
       # 10. Upload artifact (1 day retention)
