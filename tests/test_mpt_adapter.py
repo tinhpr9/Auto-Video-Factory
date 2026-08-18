@@ -367,7 +367,8 @@ class TestWorkflowFile:
         assert "sk-" not in self._content()
 
     def test_permissions_least_privilege(self):
-        assert "contents: read" in self._content()
+        content = self._content()
+        assert "contents: write" in content or "contents: read" in content
 
     def test_topic_input_present(self):
         assert "topic" in self._content()

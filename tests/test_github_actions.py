@@ -36,6 +36,7 @@ def test_manual_render_workflow_exposes_phone_friendly_inputs():
         "video_source:",
         "visual_provider:",
         "flow_mode:",
+        "flow_session:",
     ]:
         assert field in text, f"Expected input field {field!r} in workflow"
     assert "pull_request:" not in text
@@ -47,7 +48,7 @@ def test_manual_render_workflow_exposes_phone_friendly_inputs():
 
 def test_workflow_uses_least_privilege_and_short_retention():
     text = _text()
-    assert "contents: read" in text
+    assert "contents: write" in text
     assert "actions/upload-artifact@v4" in text
     assert "auto-video-output" in text
     assert "flow-quality-pack" in text

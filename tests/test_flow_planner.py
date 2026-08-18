@@ -92,12 +92,15 @@ class TestFlowScenePlanner:
     def test_plan_flow_scenes_duration_scaling(self):
         pack_60 = plan_flow_scenes("Topic", duration_seconds=60)
         assert pack_60.scenes[0].target_seconds == 10
+        assert pack_60.total_scenes == 6
         # 60s: 5 scenes * 30 (Omni Flash 10s) + 100 (Veo Quality) = 250
         assert pack_60.estimated_total_credits == 250
 
         pack_90 = plan_flow_scenes("Topic", duration_seconds=90)
-        assert pack_90.scenes[0].target_seconds == 15
-        assert pack_90.estimated_total_credits == 250
+        assert pack_90.scenes[0].target_seconds == 10
+        assert pack_90.total_scenes == 9
+        # 90s: 8 scenes * 30 (Omni Flash 10s) + 100 (Veo Quality) = 340
+        assert pack_90.estimated_total_credits == 340
 
     def test_invalid_flow_mode_raises(self):
         with pytest.raises(ValueError, match="Unknown flow_mode"):
@@ -170,7 +173,7 @@ class TestFlowCLI:
 
 
 # ===========================================================================
-# 5. Clip Validation & Audio Stripping (Deterministic Ordering)
+# 5. Clip Validation & Audio Stripping (Fail-Closed & Exact Scenes)
 # ===========================================================================
 
 class TestFlowClipStaging:
@@ -182,9 +185,79 @@ class TestFlowClipStaging:
         p.write_bytes(b"")
         assert not validate_clip(p)
 
-    def test_stage_empty_dir_returns_empty_list(self, tmp_path):
-        res = validate_and_stage_flow_clips(tmp_path / "missing", tmp_path / "staged")
-        assert res == []
+    def test_stage_empty_dir_raises_error(self, tmp_path):
+        with pytest.raises(ValueError, match="Missing required Flow scenes"):
+            validate_and_stage_flow_clips(tmp_path / "missing", tmp_path / "staged", expected_scene_count=6)
+
+    def test_stage_missing_scenes_raises_error(self, tmp_path):
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        staged_dir = tmp_path / "staged"
+
+        # Create only 4 of 6 scenes
+        for i in (1, 2, 3, 4):
+            (input_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy video content")
+
+        with patch("auto_video_factory.flow_planner.validate_clip", return_value=True), \
+             patch("auto_video_factory.flow_planner.strip_clip_audio", side_effect=lambda inp, out: out.write_bytes(b"clean")):
+            with pytest.raises(ValueError, match=r"Missing required Flow scenes: \['scene05.mp4', 'scene06.mp4'\]"):
+                validate_and_stage_flow_clips(input_dir, staged_dir, expected_scene_count=6)
+
+    def test_stage_corrupt_clip_raises_error(self, tmp_path):
+        input_dir = tmp_path / "inputs"
+        input_dir.mkdir()
+        staged_dir = tmp_path / "staged"
+
+        for i in range(1, 7):
+            (input_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+
+        # Mock validate_clip to fail on scene 3
+        def _mock_validate(p: Path) -> bool:
+            return "scene03" not in p.name
+
+        with patch("auto_video_factory.flow_planner.validate_clip", side_effect=_mock_validate), \
+             patch("auto_video_factory.flow_planner.strip_clip_audio", side_effect=lambda inp, out: out.write_bytes(b"clean")):
+            with pytest.raises(ValueError, match="Corrupt or invalid video clip: .*scene03.mp4"):
+                validate_and_stage_flow_clips(input_dir, staged_dir, expected_scene_count=6)
+
+    def test_strip_clip_audio_fails_closed_on_ffmpeg_error(self, tmp_path):
+        input_clip = tmp_path / "input.mp4"
+        input_clip.write_bytes(b"input video with audio")
+        output_clip = tmp_path / "output.mp4"
+
+        # Mock ffmpeg failure
+        mock_res = MagicMock(returncode=1, stderr="ffmpeg codec error")
+        with patch("subprocess.run", return_value=mock_res):
+            with pytest.raises(RuntimeError, match="Fail-closed: Audio stripping failed"):
+                strip_clip_audio(input_clip, output_clip)
+
+        # Output must NOT exist (never copy original audio-bearing file)
+        assert not output_clip.exists()
+
+    def test_topic_materially_changes_scene_prompts(self):
+        topic_a = "Một kiếm tu bị trục xuất khỏi Thanh Vân Môn, thức tỉnh kiếm hồn viễn cổ"
+        topic_b = "Một nữ đan sư bị hãm hại, luyện thành Cửu Chuyển Kim Đan nghịch thiên cứu thế"
+
+        pack_a = plan_flow_scenes(topic_a)
+        pack_b = plan_flow_scenes(topic_b)
+
+        # Check that prompts contain topic elements and differ materially
+        prompts_a = [s.prompt for s in pack_a.scenes]
+        prompts_b = [s.prompt for s in pack_b.scenes]
+
+        assert prompts_a != prompts_b
+        assert any("kiếm tu" in p or "Thanh Vân Môn" in p or "kiếm hồn" in p for p in prompts_a)
+        assert any("đan sư" in p or "Kim Đan" in p or "luyện đan" in p for p in prompts_b)
+
+    def test_duration_credit_consistency_all_modes_and_durations(self):
+        for dur, expected_scenes in [(45, 6), (60, 6), (90, 9)]:
+            for mode in ("flow_balanced", "flow_economy", "flow_quality"):
+                pack = plan_flow_scenes("Topic test", duration_seconds=dur, flow_mode=mode)
+                assert pack.total_scenes == expected_scenes
+                assert len(pack.scenes) == expected_scenes
+                # Sum of scene credits must strictly equal pack estimated total credits
+                calc_credits = sum(s.estimated_credits for s in pack.scenes)
+                assert pack.estimated_total_credits == calc_credits
 
 
 # ===========================================================================

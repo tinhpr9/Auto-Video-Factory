@@ -70,9 +70,14 @@ on:
           - flow_balanced
           - flow_economy
           - flow_quality
+      flow_session:
+        description: "Flow Session Tag (ví dụ: flow-session-32166245511 hoặc để trống nếu dùng storage/flow_videos/)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   render:
@@ -85,6 +90,7 @@ jobs:
       AVF_VIDEO_SOURCE: ${{ inputs.video_source }}
       AVF_VISUAL_PROVIDER: ${{ inputs.visual_provider || 'flow_clips' }}
       AVF_FLOW_MODE: ${{ inputs.flow_mode || 'flow_balanced' }}
+      AVF_FLOW_SESSION: ${{ inputs.flow_session }}
       MPT_SHA: b42e945b497176c823579f9b1895d9323446de23
       MPT_REPO: https://github.com/harry0703/MoneyPrinterTurbo
 
@@ -113,14 +119,18 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::Missing repository secret GEMINI_API_KEY. Please set it in Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-          if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
-            echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
-            exit 1
+          # prepare_flow_pack requires ZERO secrets ($0 spend)
+          if [ "$AVF_VISUAL_PROVIDER" != "prepare_flow_pack" ]; then
+            if [ -z "$GEMINI_API_KEY" ]; then
+              echo "::error::Missing repository secret GEMINI_API_KEY for video rendering. Please set it in Settings -> Secrets and variables -> Actions."
+              exit 1
+            fi
+            if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
+              echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
+              exit 1
+            fi
           fi
 
           python - << 'PYEOF'
@@ -147,8 +157,37 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 3.5 If prepare_flow_pack, upload pack artifact & complete
+      # 3.5 If prepare_flow_pack, create draft release session & upload artifact
       # -------------------------------------------------------
+      - name: Create Flow Session Draft Release and Upload Artifact
+        if: inputs.visual_provider == 'prepare_flow_pack'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SESSION_TAG="flow-session-${{ github.run_id }}"
+          echo "Creating Draft Release for Android Flow Mailbox: $SESSION_TAG"
+          
+          gh release create "$SESSION_TAG" \
+            --draft \
+            --title "Flow Ingress Session ${{ github.run_id }}" \
+            --notes-file flow_pack_output/flow_checklist.txt \
+            flow_pack_output/flow_prompts.txt \
+            flow_pack_output/flow_scene_pack.json \
+            flow_pack_output/flow_checklist.txt || echo "::warning::Draft release creation skipped"
+
+          UPLOAD_URL="https://github.com/${{ github.repository }}/releases/edit/$SESSION_TAG"
+          echo "FLOW_UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
+          
+          # Add mobile workflow summary
+          echo "## 📱 Google Flow Mobile Ingress Session" >> $GITHUB_STEP_SUMMARY
+          echo "**Session Tag:** \`$SESSION_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Android Upload URL:** [Upload Clips Here]($UPLOAD_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Steps for Android:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Open Google Flow and generate the 6 clips using \`flow_prompts.txt\`." >> $GITHUB_STEP_SUMMARY
+          echo "2. Open the [Upload URL]($UPLOAD_URL) and attach \`scene01.mp4\` through \`scene06.mp4\`." >> $GITHUB_STEP_SUMMARY
+          echo "3. Run render workflow with \`visual_provider=flow_clips\` and \`flow_session=$SESSION_TAG\`." >> $GITHUB_STEP_SUMMARY
+
       - name: Upload Flow Quality Pack Artifact
         if: inputs.visual_provider == 'prepare_flow_pack'
         uses: actions/upload-artifact@v4
@@ -233,12 +272,23 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 7.5 Validate and Stage Flow Clips (Zero Pexels Leakage)
+      # 7.5 Validate and Stage Flow Clips (Zero Pexels Leakage & Fail-Closed)
       # -------------------------------------------------------
       - name: Stage Flow Clips
         if: inputs.visual_provider == 'flow_clips'
         working-directory: mpt
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          flow_input="$GITHUB_WORKSPACE/avf/storage/flow_videos"
+          mkdir -p "$flow_input"
+
+          # Download from GitHub Release mailbox if flow_session is specified
+          if [ -n "$AVF_FLOW_SESSION" ]; then
+            echo "Downloading Flow clips from session release: $AVF_FLOW_SESSION"
+            gh release download "$AVF_FLOW_SESSION" -p "*.mp4" -D "$flow_input" || true
+          fi
+
           python - << 'PYEOF'
           import os, sys
           from pathlib import Path
@@ -247,11 +297,17 @@ jobs:
 
           flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
           staged_dir = Path("storage/local_videos")
+          duration = int(os.environ.get("AVF_DURATION", "45"))
+          expected_scenes = 9 if duration >= 90 else 6
 
-          staged_clips = validate_and_stage_flow_clips(flow_input, staged_dir)
+          staged_clips = validate_and_stage_flow_clips(
+              flow_input,
+              staged_dir,
+              expected_scene_count=expected_scenes,
+          )
           print(f"Staged {len(staged_clips)} Flow clips into {staged_dir}")
           for c in staged_clips:
-              print(f"  - {c.name} ({c.stat().st_size} bytes, audio stripped)")
+              print(f"  - {c.name} ({c.stat().st_size} bytes, fail-closed audio stripped)")
 
           with open("staged_flow_materials.txt", "w", encoding="utf-8") as f:
               f.write(",".join(str(c.resolve()) for c in staged_clips))
