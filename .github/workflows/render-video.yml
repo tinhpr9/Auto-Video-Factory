@@ -1,10 +1,28 @@
 name: Auto Video Factory
 
+# ============================================================
+# MoneyPrinterTurbo — GitHub Actions renderer
+# Upstream: https://github.com/harry0703/MoneyPrinterTurbo
+# Pinned SHA: b42e945b497176c823579f9b1895d9323446de23
+# ============================================================
+#
+# REQUIRED SECRETS (Settings → Secrets and variables → Actions):
+#   PEXELS_API_KEY   — free tier at https://www.pexels.com/api/
+#   LLM_API_KEY      — OpenAI-compatible key for script generation
+#
+# OPTIONAL SECRETS:
+#   PIXABAY_API_KEY  — fallback video source (pixabay.com)
+#   LLM_BASE_URL     — custom OpenAI-compatible endpoint
+#
+# How to run:
+#   Actions → Auto Video Factory → Run workflow
+#   Fill in topic, duration, voice → Submit → download Artifacts
+
 on:
   workflow_dispatch:
     inputs:
       topic:
-        description: "Chủ đề / ý tưởng video"
+        description: "Chủ đề video (tiếng Việt hoặc tiếng Anh)"
         required: true
         type: string
       duration_seconds:
@@ -17,30 +35,21 @@ on:
           - "60"
           - "90"
       voice:
-        description: "Giọng kể"
+        description: "Giọng kể (Edge TTS — miễn phí)"
         required: true
         default: marin
         type: choice
         options:
           - marin
           - onyx
-      style:
-        description: "Phong cách hình"
+      video_source:
+        description: "Nguồn video (pexels cần PEXELS_API_KEY)"
         required: true
-        default: xianxia-cinematic
+        default: pexels
         type: choice
         options:
-          - xianxia-cinematic
-          - ink-wash
-          - dark-fantasy
-      provider:
-        description: "AI thật hoặc smoke miễn phí"
-        required: true
-        default: openai
-        type: choice
-        options:
-          - openai
-          - offline
+          - pexels
+          - pixabay
 
 permissions:
   contents: read
@@ -48,73 +57,193 @@ permissions:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
-      TOPIC: ${{ inputs.topic }}
-      DURATION_SECONDS: ${{ inputs.duration_seconds }}
-      VOICE: ${{ inputs.voice }}
-      STYLE: ${{ inputs.style }}
-      PROVIDER: ${{ inputs.provider }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # Passed as env vars — never injected directly into shell strings
+      AVF_TOPIC: ${{ inputs.topic }}
+      AVF_DURATION: ${{ inputs.duration_seconds }}
+      AVF_VOICE: ${{ inputs.voice }}
+      AVF_VIDEO_SOURCE: ${{ inputs.video_source }}
+      # Pinned upstream SHA — single source of truth
+      MPT_SHA: b42e945b497176c823579f9b1895d9323446de23
+      MPT_REPO: https://github.com/harry0703/MoneyPrinterTurbo
 
-      - name: Set up Python
+    steps:
+      # -------------------------------------------------------
+      # 1. Checkout this repo (adapter layer + tests)
+      # -------------------------------------------------------
+      - name: Checkout Auto-Video-Factory
+        uses: actions/checkout@v4
+        with:
+          path: avf
+
+      # -------------------------------------------------------
+      # 2. Checkout MoneyPrinterTurbo at pinned SHA
+      #    (shallow clone at exact commit for reproducibility)
+      # -------------------------------------------------------
+      - name: Checkout MoneyPrinterTurbo at pinned SHA
+        run: |
+          git clone "$MPT_REPO" mpt
+          cd mpt
+          git checkout b42e945b497176c823579f9b1895d9323446de23
+          echo "MPT SHA: $(git rev-parse HEAD)"
+
+      # -------------------------------------------------------
+      # 3. System dependencies (ffmpeg + imagemagick)
+      # -------------------------------------------------------
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick
+          ffmpeg -version | head -1
+
+      # -------------------------------------------------------
+      # 4. Setup Python + uv
+      # -------------------------------------------------------
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Install media runtime
+      - name: Install uv
+        run: pip install uv --quiet
+
+      # -------------------------------------------------------
+      # 5. Install MoneyPrinterTurbo dependencies
+      # -------------------------------------------------------
+      - name: Install MPT dependencies
+        working-directory: mpt
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg espeak fonts-dejavu-core
+          uv venv .venv
+          uv pip install -r requirements.txt --quiet
+          echo "MPT deps installed"
 
-      - name: Install Auto Video Factory
-        run: python -m pip install .
-
-      - name: Validate AI secret
-        if: ${{ inputs.provider == 'openai' }}
-        shell: bash
+      # -------------------------------------------------------
+      # 6. Generate config.toml (secrets scoped here only)
+      #    Topic is read from env — never interpolated into shell
+      # -------------------------------------------------------
+      - name: Generate MPT config.toml
+        working-directory: mpt
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::Thiếu repository secret OPENAI_API_KEY"
-            exit 2
-          fi
+          python - << 'PYEOF'
+          import os, sys
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.mpt_adapter import build_config_toml
 
-      - name: Render
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          toml = build_config_toml(
+              pexels_api_key=os.environ.get("PEXELS_API_KEY", ""),
+              llm_provider="openai",
+              llm_api_key=os.environ.get("LLM_API_KEY", ""),
+              pixabay_api_key=os.environ.get("PIXABAY_API_KEY", ""),
+          )
+          with open("config.toml", "w", encoding="utf-8") as f:
+              f.write(toml)
+          print("config.toml written")
+          PYEOF
+
+      # -------------------------------------------------------
+      # 7. Run MoneyPrinterTurbo CLI
+      #    Topic is passed via env var AVF_TOPIC, then read by
+      #    Python → passed as a list element to subprocess.
+      #    No shell interpolation of user input.
+      # -------------------------------------------------------
+      - name: Render video with MoneyPrinterTurbo
+        working-directory: mpt
         run: |
-          set -euo pipefail
-          mkdir -p output/github
-          auto-video-factory \
-            --topic "$TOPIC" \
-            --output output/github \
-            --duration-seconds "$DURATION_SECONDS" \
-            --provider "$PROVIDER" \
-            --tts-voice "$VOICE" \
-            --style "$STYLE" \
-            --width 720 \
-            --height 1280 \
-            --fps 30 \
-            | tee output/github/result.json
+          python - << 'PYEOF'
+          import os, sys, subprocess, json
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.mpt_adapter import build_cli_args
 
+          topic        = os.environ["AVF_TOPIC"]
+          duration     = os.environ["AVF_DURATION"]
+          voice        = os.environ["AVF_VOICE"]
+          video_source = os.environ["AVF_VIDEO_SOURCE"]
+
+          cli_args = build_cli_args(
+              topic=topic,
+              duration=duration,
+              voice=voice,
+              video_source=video_source,
+          )
+          cmd = [sys.executable, "cli.py"] + cli_args
+          print("Running MPT CLI (topic redacted from log):", cmd[:3], "... [args]")
+
+          result = subprocess.run(cmd, capture_output=False, text=True)
+          sys.exit(result.returncode)
+          PYEOF
+
+      # -------------------------------------------------------
+      # 8. Locate output video and write metadata
+      # -------------------------------------------------------
+      - name: Locate output and write metadata
+        working-directory: mpt
+        run: |
+          python - << 'PYEOF'
+          import os, sys, json, shutil, glob
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.mpt_adapter import locate_output_video, sanitize_result_metadata
+
+          mpt_root = os.getcwd()
+
+          # Find most recently modified task dir
+          task_dirs = glob.glob(os.path.join(mpt_root, "storage", "tasks", "*"))
+          if not task_dirs:
+              sys.exit("ERROR: No task directories found in storage/tasks/")
+          task_dirs.sort(key=os.path.getmtime, reverse=True)
+          task_id = os.path.basename(task_dirs[0])
+          print(f"Task ID: {task_id}")
+
+          video_path = locate_output_video(mpt_root, task_id)
+          print(f"Video: {video_path} ({os.path.getsize(video_path)} bytes)")
+
+          # Stage output
+          out_dir = os.path.join(mpt_root, "avf_output")
+          os.makedirs(out_dir, exist_ok=True)
+          shutil.copy2(video_path, os.path.join(out_dir, "video.mp4"))
+
+          # Copy SRT if present
+          srt_candidates = glob.glob(os.path.join(task_dirs[0], "**", "*.srt"), recursive=True)
+          if srt_candidates:
+              shutil.copy2(srt_candidates[0], os.path.join(out_dir, "captions.srt"))
+
+          # Write sanitized metadata
+          meta = sanitize_result_metadata({
+              "status": "ok",
+              "task_id": task_id,
+              "mpt_sha": "b42e945b497176c823579f9b1895d9323446de23",
+              "topic_length": len(os.environ.get("AVF_TOPIC", "")),
+              "duration_input": os.environ.get("AVF_DURATION"),
+              "voice": os.environ.get("AVF_VOICE"),
+              "video_source": os.environ.get("AVF_VIDEO_SOURCE"),
+              "video_size_bytes": os.path.getsize(os.path.join(out_dir, "video.mp4")),
+          })
+          with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as f:
+              json.dump(meta, f, ensure_ascii=False, indent=2)
+
+          print("Output staged:", os.listdir(out_dir))
+          PYEOF
+
+      # -------------------------------------------------------
+      # 9. Verify output video non-empty before upload
+      # -------------------------------------------------------
       - name: Verify output video
-        shell: bash
-        run: |
-          test -s output/github/video.mp4 || { echo "::error::Output video.mp4 missing or empty"; exit 1; }
+        run: test -s mpt/avf_output/video.mp4 && echo "VERIFY PASS" || (echo "VERIFY FAIL" && exit 1)
 
-      - name: Upload MP4
+      # -------------------------------------------------------
+      # 10. Upload artifact (1 day retention)
+      # -------------------------------------------------------
+      - name: Upload video artifact
         uses: actions/upload-artifact@v4
         with:
           name: auto-video-output
           path: |
-            output/github/video.mp4
-            output/github/captions.srt
-            output/github/result.json
+            mpt/avf_output/video.mp4
+            mpt/avf_output/captions.srt
+            mpt/avf_output/result.json
           if-no-files-found: error
           retention-days: 1
