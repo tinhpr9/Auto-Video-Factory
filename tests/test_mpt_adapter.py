@@ -173,6 +173,23 @@ class TestBuildCliArgs:
         assert "sk-" not in joined
         assert "ghp_" not in joined
 
+    def test_default_font_name_in_args(self):
+        args = self._args()
+        assert "--font-name" in args
+        idx = args.index("--font-name")
+        assert args[idx + 1] == mpt_adapter.DEFAULT_FONT_NAME
+
+    def test_custom_font_name_in_args(self):
+        args = mpt_adapter.build_cli_args(
+            topic="Test topic",
+            duration="45",
+            voice="marin",
+            font_name="DejaVuSans-Bold.ttf",
+        )
+        assert "--font-name" in args
+        idx = args.index("--font-name")
+        assert args[idx + 1] == "DejaVuSans-Bold.ttf"
+
     def test_invalid_duration_propagates(self):
         with pytest.raises(ValueError):
             self._args(duration="999")
@@ -180,6 +197,39 @@ class TestBuildCliArgs:
     def test_invalid_voice_propagates(self):
         with pytest.raises(ValueError):
             self._args(voice="bad-voice")
+
+
+# ===========================================================================
+# 4.5. Vietnamese glyph regression set
+# ===========================================================================
+
+class TestVietnameseGlyphSet:
+    GLYPH_REGRESSION_SET = (
+        "ă â ê ô ơ ư đ "
+        "á à ả ã ạ "
+        "ấ ầ ẩ ẫ ậ "
+        "ế ề ể ễ ệ "
+        "ố ồ ổ ỗ ộ "
+        "ớ ờ ở ỡ ợ "
+        "ứ ừ ử ữ ự "
+        "Ă Â Ê Ô Ơ Ư Đ "
+        "Á À Ả Ã Ạ "
+        "Ấ Ầ Ẩ Ẫ Ậ "
+        "Ế Ề Ể Ễ Ệ "
+        "Ố Ồ Ổ Ỗ Ộ "
+        "Ớ Ờ Ở Ỡ Ợ "
+        "Ứ Ừ Ử Ữ Ự"
+    )
+
+    def test_default_font_is_unicode_capable(self):
+        assert mpt_adapter.DEFAULT_FONT_NAME.endswith((".ttf", ".ttc", ".otf"))
+        assert "noto" in mpt_adapter.DEFAULT_FONT_NAME.lower() or "dejavu" in mpt_adapter.DEFAULT_FONT_NAME.lower()
+
+    def test_glyph_sample_string_valid(self):
+        chars = [c for c in self.GLYPH_REGRESSION_SET if not c.isspace()]
+        assert len(chars) >= 37
+        assert "ă" in chars and "đ" in chars and "ự" in chars
+        assert "Ă" in chars and "Đ" in chars and "Ự" in chars
 
 
 # ===========================================================================
