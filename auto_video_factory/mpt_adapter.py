@@ -145,6 +145,7 @@ def build_cli_args(
     voice: str,
     video_source: str = "pexels",
     font_name: str = DEFAULT_FONT_NAME,
+    video_materials: str = "",
 ) -> list[str]:
     """
     Build the list of CLI arguments for ``python cli.py``.
@@ -154,11 +155,12 @@ def build_cli_args(
     to ``subprocess.run(..., shell=False)``.
 
     Args:
-        topic:        Raw topic string from workflow_dispatch input.
-        duration:     Duration string ("45", "60", "90").
-        voice:        Voice name ("marin", "onyx").
-        video_source: Material source ("pexels", "pixabay", "coverr", "local").
-        font_name:    Subtitle font filename in resource/fonts (default: NotoSans-Bold.ttf).
+        topic:           Raw topic string from workflow_dispatch input.
+        duration:        Duration string ("45", "60", "90").
+        voice:           Voice name ("marin", "onyx").
+        video_source:    Material source ("pexels", "pixabay", "coverr", "local").
+        font_name:       Subtitle font filename in resource/fonts (default: NotoSans-Bold.ttf).
+        video_materials: Comma-separated list or directory of local video clips when video_source is 'local'.
 
     Returns:
         Argument list ready for ``subprocess.run([python, "cli.py", *args])``.
@@ -175,7 +177,7 @@ def build_cli_args(
         f"Tổng độ dài khoảng {word_budget} từ để thời lượng đọc vừa vặn {duration} giây."
     )
 
-    return [
+    args = [
         "--video-subject", topic,            # verbatim — safe via subprocess list
         "--video-aspect", "9:16",            # portrait 1080×1920
         "--paragraph-number", str(paragraphs),
@@ -189,6 +191,11 @@ def build_cli_args(
         "--match-materials-to-script",
         "--video-script-prompt", script_prompt,
     ]
+
+    if video_source == "local" and video_materials:
+        args.extend(["--video-materials", video_materials])
+
+    return args
 
 
 # ---------------------------------------------------------------------------

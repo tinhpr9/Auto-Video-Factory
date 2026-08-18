@@ -21,6 +21,12 @@ tests:
     assert:
       - type: is-json
       - type: javascript
-        value: |
+      - value: |
           const x = JSON.parse(output);
           return x.scenes.length === 3 && x.scenes.every(s => s.narration.length > 10 && s.visual_prompt.length > 10);
+  - vars:
+      topic: "Một đệ tử bị tông môn ruồng bỏ, nhiều năm sau thức tỉnh sức mạnh cổ đại và quay trở lại."
+      duration: 45
+      flow_mode: "flow_balanced"
+    assert:
+      - type: is-json

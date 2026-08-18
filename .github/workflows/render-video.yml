@@ -4,19 +4,21 @@ name: Auto Video Factory
 # MoneyPrinterTurbo — GitHub Actions renderer
 # Upstream: https://github.com/harry0703/MoneyPrinterTurbo
 # Pinned SHA: b42e945b497176c823579f9b1895d9323446de23
+# Visual Quality: Google Flow Quality Pipeline & Scene Planner (V4.3)
 # ============================================================
 #
 # REQUIRED SECRETS (Settings → Secrets and variables → Actions):
-#   PEXELS_API_KEY   — free tier at https://www.pexels.com/api/
-#   GEMINI_API_KEY   — Google Gemini API key (free tier available)
+#   GEMINI_API_KEY   — Google Gemini API key (free tier for script generation)
+#   PEXELS_API_KEY   — Pexels API key (only required when visual_provider=pexels)
 #
 # OPTIONAL SECRETS:
 #   PIXABAY_API_KEY  — fallback video source (pixabay.com)
-#   LLM_BASE_URL     — custom OpenAI-compatible endpoint
 #
 # How to run:
 #   Actions → Auto Video Factory → Run workflow
-#   Fill in topic, duration, voice → Submit → download Artifacts
+#   1. Mode "prepare_flow_pack": Generates Scene Pack JSON, copyable prompts, and mobile checklist.
+#   2. Mode "flow_clips": Composes video from staged Google Flow clips (Zero Pexels leakage).
+#   3. Mode "pexels": Baseline free stock footage rendering.
 
 on:
   workflow_dispatch:
@@ -28,14 +30,14 @@ on:
       duration_seconds:
         description: "Độ dài mục tiêu"
         required: true
-        default: "60"
+        default: "45"
         type: choice
         options:
           - "45"
           - "60"
           - "90"
       voice:
-        description: "Giọng kể (Edge TTS — miễn phí)"
+        description: "Giọng kể (Edge TTS — tiếng Việt chuẩn)"
         required: true
         default: marin
         type: choice
@@ -43,13 +45,31 @@ on:
           - marin
           - onyx
       video_source:
-        description: "Nguồn video (pexels cần PEXELS_API_KEY)"
+        description: "Nguồn video dự phòng"
         required: true
         default: pexels
         type: choice
         options:
           - pexels
           - pixabay
+      visual_provider:
+        description: "Nhà cung cấp hình ảnh (flow_clips, prepare_flow_pack, pexels)"
+        required: true
+        default: flow_clips
+        type: choice
+        options:
+          - flow_clips
+          - prepare_flow_pack
+          - pexels
+      flow_mode:
+        description: "Chế độ Flow credit (flow_balanced: Omni Flash + Climax Veo Quality)"
+        required: true
+        default: flow_balanced
+        type: choice
+        options:
+          - flow_balanced
+          - flow_economy
+          - flow_quality
 
 permissions:
   contents: read
@@ -59,12 +79,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      # Passed as env vars — never injected directly into shell strings
       AVF_TOPIC: ${{ inputs.topic }}
       AVF_DURATION: ${{ inputs.duration_seconds }}
       AVF_VOICE: ${{ inputs.voice }}
       AVF_VIDEO_SOURCE: ${{ inputs.video_source }}
-      # Pinned upstream SHA — single source of truth
+      AVF_VISUAL_PROVIDER: ${{ inputs.visual_provider || 'flow_clips' }}
+      AVF_FLOW_MODE: ${{ inputs.flow_mode || 'flow_balanced' }}
       MPT_SHA: b42e945b497176c823579f9b1895d9323446de23
       MPT_REPO: https://github.com/harry0703/MoneyPrinterTurbo
 
@@ -78,38 +98,17 @@ jobs:
           path: avf
 
       # -------------------------------------------------------
-      # 2. Checkout MoneyPrinterTurbo at pinned SHA
-      #    (shallow clone at exact commit for reproducibility)
+      # 2. Setup Python (runs in <2s with cached runner python)
       # -------------------------------------------------------
-      - name: Checkout MoneyPrinterTurbo at pinned SHA
-        run: |
-          git clone "$MPT_REPO" mpt
-          cd mpt
-          git checkout "$MPT_SHA"
-          echo "MPT SHA: $(git rev-parse HEAD)"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       # -------------------------------------------------------
-      # 3. System dependencies (ffmpeg + imagemagick + Noto fonts)
+      # 3. Fail-fast Secrets Validation and Provider Preflight
       # -------------------------------------------------------
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-noto-core fonts-dejavu-core
-          ffmpeg -version | head -1
-          # Install Vietnamese-capable Unicode font (NotoSans-Bold.ttf) into MPT font dir
-          mkdir -p mpt/resource/fonts
-          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" | head -n 1)
-          if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
-            cp "$NOTO_FONT" mpt/resource/fonts/NotoSans-Bold.ttf
-            echo "Installed subtitle font from $NOTO_FONT to mpt/resource/fonts/NotoSans-Bold.ttf"
-          else
-            echo "::warning::NotoSans font not found in /usr/share/fonts"
-          fi
-
-      # -------------------------------------------------------
-      # 3.5 Validate required secrets
-      # -------------------------------------------------------
-      - name: Validate required secrets
+      - name: Validate secrets and provider preflight
         shell: bash
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -119,26 +118,86 @@ jobs:
             echo "::error::Missing repository secret GEMINI_API_KEY. Please set it in Settings -> Secrets and variables -> Actions."
             exit 1
           fi
-          if [ -z "$PEXELS_API_KEY" ]; then
-            echo "::error::Missing repository secret PEXELS_API_KEY."
+          if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
+            echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
             exit 1
           fi
 
-      # -------------------------------------------------------
-      # 4. Setup Python + uv
-      # -------------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          python - << 'PYEOF'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.flow_planner import plan_flow_scenes, export_flow_pack
 
+          provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
+          topic = os.environ.get("AVF_TOPIC", "")
+          duration = int(os.environ.get("AVF_DURATION", "45"))
+          mode = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+
+          print(f"Executing Preflight for Visual Provider: {provider} (Flow Mode: {mode})")
+
+          if provider in ("flow_clips", "prepare_flow_pack"):
+              pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+              pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
+              paths = export_flow_pack(pack, pack_dir)
+              print(f"Generated Flow Scene Pack: {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
+              print(f"Pack files created at: {pack_dir}")
+
+          print("Preflight validation: OK")
+          PYEOF
+
+      # -------------------------------------------------------
+      # 3.5 If prepare_flow_pack, upload pack artifact & complete
+      # -------------------------------------------------------
+      - name: Upload Flow Quality Pack Artifact
+        if: inputs.visual_provider == 'prepare_flow_pack'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-quality-pack
+          path: flow_pack_output/
+          retention-days: 3
+
+      # -------------------------------------------------------
+      # 4. Checkout MoneyPrinterTurbo at pinned SHA
+      # -------------------------------------------------------
+      - name: Checkout MoneyPrinterTurbo at pinned SHA
+        if: inputs.visual_provider != 'prepare_flow_pack'
+        run: |
+          git clone --depth 1 "$MPT_REPO" mpt || git clone "$MPT_REPO" mpt
+          cd mpt
+          git fetch --depth 1 origin "$MPT_SHA" || true
+          git checkout "$MPT_SHA"
+          echo "MPT SHA: $(git rev-parse HEAD)"
+
+      # -------------------------------------------------------
+      # 5. System dependencies (with bounded timeout & non-interactive)
+      # -------------------------------------------------------
+      - name: Install system dependencies
+        if: inputs.visual_provider != 'prepare_flow_pack'
+        timeout-minutes: 8
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y || true
+          sudo apt-get install -y --no-install-recommends imagemagick fonts-noto-core fonts-dejavu-core || true
+          ffmpeg -version | head -1
+          mkdir -p mpt/resource/fonts
+          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -n 1)
+          if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
+            cp "$NOTO_FONT" mpt/resource/fonts/NotoSans-Bold.ttf
+            echo "Installed subtitle font from $NOTO_FONT to mpt/resource/fonts/NotoSans-Bold.ttf"
+          else
+            echo "::warning::NotoSans font not found in /usr/share/fonts"
+          fi
+
+      # -------------------------------------------------------
+      # 6. Install uv and MPT dependencies
+      # -------------------------------------------------------
       - name: Install uv
+        if: inputs.visual_provider != 'prepare_flow_pack'
         run: pip install uv --quiet
 
-      # -------------------------------------------------------
-      # 5. Install MoneyPrinterTurbo dependencies
-      # -------------------------------------------------------
       - name: Install MPT dependencies
+        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         run: |
           uv venv .venv
@@ -147,10 +206,10 @@ jobs:
           echo "MPT deps installed"
 
       # -------------------------------------------------------
-      # 6. Generate config.toml (secrets scoped here only)
-      #    Topic is read from env — never interpolated into shell
+      # 7. Generate MPT config.toml
       # -------------------------------------------------------
       - name: Generate MPT config.toml
+        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
@@ -174,29 +233,69 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 7. Run MoneyPrinterTurbo CLI
-      #    Topic is passed via env var AVF_TOPIC, then read by
-      #    Python → passed as a list element to subprocess.
-      #    No shell interpolation of user input.
+      # 7.5 Validate and Stage Flow Clips (Zero Pexels Leakage)
       # -------------------------------------------------------
-      - name: Render video with MoneyPrinterTurbo
+      - name: Stage Flow Clips
+        if: inputs.visual_provider == 'flow_clips'
         working-directory: mpt
         run: |
           python - << 'PYEOF'
-          import os, sys, subprocess, json
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.flow_planner import validate_and_stage_flow_clips
+
+          flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
+          staged_dir = Path("storage/local_videos")
+
+          staged_clips = validate_and_stage_flow_clips(flow_input, staged_dir)
+          print(f"Staged {len(staged_clips)} Flow clips into {staged_dir}")
+          for c in staged_clips:
+              print(f"  - {c.name} ({c.stat().st_size} bytes, audio stripped)")
+
+          with open("staged_flow_materials.txt", "w", encoding="utf-8") as f:
+              f.write(",".join(str(c.resolve()) for c in staged_clips))
+          PYEOF
+
+      # -------------------------------------------------------
+      # 8. Render video with MoneyPrinterTurbo
+      # -------------------------------------------------------
+      - name: Render video with MoneyPrinterTurbo
+        if: inputs.visual_provider != 'prepare_flow_pack'
+        working-directory: mpt
+        run: |
+          python - << 'PYEOF'
+          import os, sys, subprocess, json, glob
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
           from auto_video_factory.mpt_adapter import build_cli_args
 
           topic        = os.environ["AVF_TOPIC"]
           duration     = os.environ["AVF_DURATION"]
           voice        = os.environ["AVF_VOICE"]
-          video_source = os.environ["AVF_VIDEO_SOURCE"]
+          provider     = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
+
+          # Check if flow local clips are present
+          flow_materials = ""
+          if os.path.exists("staged_flow_materials.txt"):
+              with open("staged_flow_materials.txt", "r", encoding="utf-8") as f:
+                  flow_materials = f.read().strip()
+
+          if provider == "flow_clips":
+              if not flow_materials:
+                  print("::error::No staged Flow clips found in storage/flow_videos/ for visual_provider=flow_clips. Please add clips to storage/flow_videos/ or use visual_provider=prepare_flow_pack to generate prompts.")
+                  sys.exit(1)
+              video_source = "local"
+              print(f"Using Flow Local Clips: {flow_materials} (Zero Pexels Leakage)")
+          else:
+              video_source = os.environ.get("AVF_VIDEO_SOURCE", "pexels")
+              print(f"Using Video Source: {video_source}")
 
           cli_args = build_cli_args(
               topic=topic,
               duration=duration,
               voice=voice,
               video_source=video_source,
+              video_materials=flow_materials if video_source == "local" else "",
           )
           cmd = [sys.executable, "cli.py"] + cli_args
           print("Running MPT CLI (topic redacted from log):", cmd[:3], "... [args]")
@@ -206,9 +305,10 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 8. Locate output video and write metadata
+      # 9. Locate output video and write metadata
       # -------------------------------------------------------
       - name: Locate output and write metadata
+        if: inputs.visual_provider != 'prepare_flow_pack'
         working-directory: mpt
         run: |
           python - << 'PYEOF'
@@ -218,7 +318,6 @@ jobs:
 
           mpt_root = os.getcwd()
 
-          # Find most recently modified task dir
           task_dirs = glob.glob(os.path.join(mpt_root, "storage", "tasks", "*"))
           if not task_dirs:
               sys.exit("ERROR: No task directories found in storage/tasks/")
@@ -229,21 +328,20 @@ jobs:
           video_path = locate_output_video(mpt_root, task_id)
           print(f"Video: {video_path} ({os.path.getsize(video_path)} bytes)")
 
-          # Stage output
           out_dir = os.path.join(mpt_root, "avf_output")
           os.makedirs(out_dir, exist_ok=True)
           shutil.copy2(video_path, os.path.join(out_dir, "video.mp4"))
 
-          # Copy SRT if present
           srt_candidates = glob.glob(os.path.join(task_dirs[0], "**", "*.srt"), recursive=True)
           if srt_candidates:
               shutil.copy2(srt_candidates[0], os.path.join(out_dir, "captions.srt"))
 
-          # Write sanitized metadata
           meta = sanitize_result_metadata({
               "status": "ok",
               "task_id": task_id,
               "mpt_sha": os.environ.get("MPT_SHA", ""),
+              "visual_provider": os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips"),
+              "flow_mode": os.environ.get("AVF_FLOW_MODE", "flow_balanced"),
               "topic_length": len(os.environ.get("AVF_TOPIC", "")),
               "duration_input": os.environ.get("AVF_DURATION"),
               "voice": os.environ.get("AVF_VOICE"),
@@ -257,9 +355,10 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 9. Verify output video duration before upload
+      # 10. Verify output video duration before upload
       # -------------------------------------------------------
       - name: Verify output video
+        if: inputs.visual_provider != 'prepare_flow_pack'
         run: |
           test -s mpt/avf_output/video.mp4 || { echo "VERIFY FAIL: empty video"; exit 1; }
           
@@ -286,9 +385,10 @@ jobs:
           echo "VERIFY PASS"
 
       # -------------------------------------------------------
-      # 10. Upload artifact (1 day retention)
+      # 11. Upload video artifact (1 day retention)
       # -------------------------------------------------------
       - name: Upload video artifact
+        if: inputs.visual_provider != 'prepare_flow_pack'
         uses: actions/upload-artifact@v4
         with:
           name: auto-video-output

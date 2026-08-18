@@ -29,7 +29,14 @@ def test_manual_render_workflow_exposes_phone_friendly_inputs():
     text = _text()
     assert "name: Auto Video Factory" in text
     assert "workflow_dispatch:" in text
-    for field in ["topic:", "duration_seconds:", "voice:", "video_source:"]:
+    for field in [
+        "topic:",
+        "duration_seconds:",
+        "voice:",
+        "video_source:",
+        "visual_provider:",
+        "flow_mode:",
+    ]:
         assert field in text, f"Expected input field {field!r} in workflow"
     assert "pull_request:" not in text
 
@@ -43,6 +50,7 @@ def test_workflow_uses_least_privilege_and_short_retention():
     assert "contents: read" in text
     assert "actions/upload-artifact@v4" in text
     assert "auto-video-output" in text
+    assert "flow-quality-pack" in text
     assert "retention-days:" in text
     m = re.search(r"retention-days:\s*(\d+)", text)
     assert m is not None and int(m.group(1)) <= 3, "retention-days must be <= 3"
