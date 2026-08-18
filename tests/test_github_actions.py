@@ -101,7 +101,8 @@ def test_mpt_repo_referenced():
 
 def test_workflow_installs_ffmpeg():
     text = _text()
-    assert "ffmpeg" in text
+    assert "apt-get install" in text and "ffmpeg" in text
+    assert "ffprobe -version" in text or "ffprobe" in text
 
 
 def test_workflow_installs_python_and_uv():

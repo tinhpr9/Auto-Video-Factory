@@ -327,8 +327,9 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update -y || true
-          sudo apt-get install -y --no-install-recommends imagemagick fonts-noto-core fonts-dejavu-core || true
+          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-noto-core fonts-dejavu-core || true
           ffmpeg -version | head -1
+          ffprobe -version | head -1
           mkdir -p mpt/resource/fonts
           NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -n 1)
           if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
