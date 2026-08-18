@@ -61,15 +61,15 @@ class TestDurationMapping:
 
 class TestWordBudgetMapping:
     @pytest.mark.parametrize("duration,expected", [
-        ("45", 112),
-        ("60", 150),
-        ("90", 225),
+        ("45", 157),
+        ("60", 210),
+        ("90", 315),
     ])
     def test_duration_to_word_budget(self, duration, expected):
         assert mpt_adapter.duration_to_word_budget(duration) == expected
 
     def test_fallback_duration(self):
-        assert mpt_adapter.duration_to_word_budget("invalid") == 112
+        assert mpt_adapter.duration_to_word_budget("invalid") == 157
 
 # ===========================================================================
 # 3. voice name mapping
@@ -166,7 +166,7 @@ class TestBuildCliArgs:
         args = self._args(duration="45")
         assert "--video-script-prompt" in args
         idx = args.index("--video-script-prompt")
-        assert "112 từ" in args[idx + 1]
+        assert "157 từ" in args[idx + 1]
         assert "45 giây" in args[idx + 1]
         args = self._args()
         joined = " ".join(args)

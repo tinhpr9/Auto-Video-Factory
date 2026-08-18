@@ -74,7 +74,9 @@ def duration_to_paragraphs(duration: str) -> int:
 def duration_to_word_budget(duration: str) -> int:
     """
     Calculate the target word count for a given duration.
-    Assumes an average Vietnamese TTS reading speed of ~2.5 words per second.
+    Empirical evidence from GitHub Actions runtime:
+    112 words of Vietnamese script generated 32 seconds of Edge TTS audio.
+    Speed = 112 / 32 = 3.5 words per second.
 
     Args:
         duration: One of "45", "60", "90".
@@ -87,8 +89,8 @@ def duration_to_word_budget(duration: str) -> int:
     except ValueError:
         dur_int = 45
 
-    # 2.5 words per second is a good heuristic for Vietnamese narration
-    return int(dur_int * 2.5)
+    # 3.5 words per second based on vi-VN Edge TTS
+    return int(dur_int * 3.5)
 
 
 # ---------------------------------------------------------------------------
