@@ -385,18 +385,7 @@ jobs:
       - name: Stage Flow Clips
         if: inputs.visual_provider == 'flow_clips'
         working-directory: mpt
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          flow_input="$GITHUB_WORKSPACE/avf/storage/flow_videos"
-          mkdir -p "$flow_input"
-
-          # Download from GitHub Release mailbox if flow_session is specified
-          if [ -n "$AVF_FLOW_SESSION" ]; then
-            echo "Downloading Flow clips from session release: $AVF_FLOW_SESSION"
-            gh release download "$AVF_FLOW_SESSION" --repo "${{ github.repository }}" -p "*.mp4" -D "$flow_input"
-          fi
-
           python - << 'PYEOF'
           import os, sys
           from pathlib import Path

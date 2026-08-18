@@ -317,3 +317,37 @@ def test_render_preflight_loads_flow_session_manifest_to_prevent_drift():
         "render job must use authoritative session loader to prevent dispatch drift"
     )
 
+
+# ---------------------------------------------------------------------------
+# Valid Bug: Single-owner flow session download (prevent double download collision)
+# ---------------------------------------------------------------------------
+
+def test_flow_session_download_has_single_owner_in_preflight():
+    """Network download of flow_session assets must occur exactly once in Preflight.
+    Stage Flow Clips must NOT duplicate the download, which causes file collision failures."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+
+    # Extract Preflight step vs Stage Flow Clips step
+    preflight_chunk = render_job.split("Validate secrets and provider preflight", 1)[1].split("Checkout MoneyPrinterTurbo", 1)[0]
+    assert "gh release download" in preflight_chunk, (
+        "Preflight must own the single network ingress download of flow_session assets"
+    )
+
+    stage_chunk = render_job.split("Stage Flow Clips", 1)[1].split("Render video with MoneyPrinterTurbo", 1)[0]
+    assert "gh release download" not in stage_chunk, (
+        "Stage Flow Clips must NOT duplicate gh release download. "
+        "Preflight is the sole network ingress owner."
+    )
+
+
+def test_render_job_exact_single_release_download():
+    """Render job must have exactly ONE gh release download invocation across all steps."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+    download_count = render_job.count("gh release download")
+    assert download_count == 1, (
+        f"Render job should have exactly 1 'gh release download' invocation, found {download_count}."
+    )
+
+
