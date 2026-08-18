@@ -56,15 +56,15 @@ def test_no_hardcoded_secrets_in_workflow():
 
 
 def test_secrets_scoped_to_steps_not_job_env():
-    """LLM_API_KEY and PEXELS_API_KEY must appear only in step-level env blocks."""
+    """GEMINI_API_KEY and PEXELS_API_KEY must appear only in step-level env blocks."""
     text = _text()
     # Secrets must be referenced only via ${{ secrets.* }} syntax — not hardcoded
     assert "${{ secrets.PEXELS_API_KEY }}" in text
-    assert "${{ secrets.LLM_API_KEY }}" in text
+    assert "${{ secrets.GEMINI_API_KEY }}" in text
     # Secrets must NOT appear in the top-level job env block
     job_level = text.split("    steps:", 1)[0]
-    assert "secrets.LLM_API_KEY" not in job_level, (
-        "LLM_API_KEY must be step-scoped, not job-level env"
+    assert "secrets.GEMINI_API_KEY" not in job_level, (
+        "GEMINI_API_KEY must be step-scoped, not job-level env"
     )
     assert "secrets.PEXELS_API_KEY" not in job_level, (
         "PEXELS_API_KEY must be step-scoped, not job-level env"

@@ -8,7 +8,7 @@ name: Auto Video Factory
 #
 # REQUIRED SECRETS (Settings → Secrets and variables → Actions):
 #   PEXELS_API_KEY   — free tier at https://www.pexels.com/api/
-#   LLM_API_KEY      — OpenAI-compatible key for script generation
+#   GEMINI_API_KEY   — Google Gemini API key (free tier available)
 #
 # OPTIONAL SECRETS:
 #   PIXABAY_API_KEY  — fallback video source (pixabay.com)
@@ -126,7 +126,7 @@ jobs:
         working-directory: mpt
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
           python - << 'PYEOF'
@@ -136,8 +136,8 @@ jobs:
 
           toml = build_config_toml(
               pexels_api_key=os.environ.get("PEXELS_API_KEY", ""),
-              llm_provider="openai",
-              llm_api_key=os.environ.get("LLM_API_KEY", ""),
+              llm_provider="gemini",
+              llm_api_key=os.environ.get("GEMINI_API_KEY", ""),
               pixabay_api_key=os.environ.get("PIXABAY_API_KEY", ""),
           )
           with open("config.toml", "w", encoding="utf-8") as f:
