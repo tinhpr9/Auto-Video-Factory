@@ -144,12 +144,58 @@ def test_prepare_flow_pack_summary_does_not_hardcode_scene06():
     )
 
 def test_prepare_flow_pack_summary_references_scene_count_variable():
-    """Summary must use SCENE_COUNT variable derived from duration, not a literal."""
+    """Summary must use EXPECTED_SCENES / LAST_SCENE derived from FlowScenePack."""
     text = _text()
-    # Verify that the summary uses a computed variable (EXPECTED_SCENES or similar)
-    assert "EXPECTED_SCENES" in text or "scene_count" in text.lower() or "SCENE_COUNT" in text, (
-        "Workflow summary must derive scene count from duration, not hardcode 6"
+    assert "EXPECTED_SCENES" in text
+    assert "LAST_SCENE" in text
+
+
+def test_prepare_flow_pack_derives_scenes_from_pack_json_not_duration_heuristics():
+    """Workflow prepare job must read flow_scene_pack.json as the single authority
+    for scene count and last scene filename, without duplicating duration heuristics."""
+    text = _text()
+    prepare_job = text.split("prepare:", 1)[1].split("render:", 1)[0]
+    assert "flow_scene_pack.json" in prepare_job
+    assert "-ge 90" not in prepare_job, (
+        "prepare job must not duplicate flow_planner.py logic with '-ge 90'"
     )
+
+
+def test_workflow_does_not_duplicate_duration_to_scene_heuristics():
+    """Neither prepare nor render job should contain hardcoded 'if duration >= 90' or '-ge 90'."""
+    text = _text()
+    assert "-ge 90" not in text, "Workflow should not contain shell duration >= 90 heuristic"
+    assert "9 if duration >= 90 else 6" not in text, (
+        "Workflow should not contain python duration >= 90 heuristic outside flow_planner.py"
+    )
+
+
+def test_summary_scene_derivation_from_simulated_custom_pack(tmp_path):
+    """Simulate a custom FlowScenePack with arbitrary scene count and verify extraction."""
+    import json
+    import subprocess
+    import sys
+    pack_data = {
+        "total_scenes": 12,
+        "scenes": [{"expected_filename": f"scene{i:02d}.mp4"} for i in range(1, 13)]
+    }
+    pack_file = tmp_path / "flow_scene_pack.json"
+    pack_file.write_text(json.dumps(pack_data), encoding="utf-8")
+
+    cmd_scenes = [
+        sys.executable, "-c",
+        f"import json; d=json.load(open('{pack_file}')); print(d.get('total_scenes', len(d.get('scenes', []))))"
+    ]
+    cmd_last = [
+        sys.executable, "-c",
+        f"import json; d=json.load(open('{pack_file}')); print(d['scenes'][-1]['expected_filename'] if d.get('scenes') else f'scene{{int(d.get(\"total_scenes\", 6)):02d}}.mp4')"
+    ]
+
+    res_scenes = subprocess.run(cmd_scenes, capture_output=True, text=True, check=True)
+    res_last = subprocess.run(cmd_last, capture_output=True, text=True, check=True)
+
+    assert res_scenes.stdout.strip() == "12"
+    assert res_last.stdout.strip() == "scene12.mp4"
 
 
 # ---------------------------------------------------------------------------

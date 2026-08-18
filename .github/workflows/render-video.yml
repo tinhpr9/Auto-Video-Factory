@@ -103,6 +103,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: avf
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -133,17 +134,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           SESSION_TAG="flow-session-${{ github.run_id }}"
-          DURATION="${AVF_DURATION:-45}"
-          # Derive expected scene count from duration — must match flow_planner.py logic
-          if [ "$DURATION" -ge 90 ]; then
-            EXPECTED_SCENES=9
-          else
-            EXPECTED_SCENES=6
-          fi
-          LAST_SCENE=$(printf "scene%02d.mp4" "$EXPECTED_SCENES")
+          PACK_JSON="flow_pack_output/flow_scene_pack.json"
+
+          # Derive expected scene count and last scene filename directly from generated FlowScenePack
+          EXPECTED_SCENES=$(python -c "import json; d=json.load(open('$PACK_JSON')); print(d.get('total_scenes', len(d.get('scenes', []))))")
+          LAST_SCENE=$(python -c "import json; d=json.load(open('$PACK_JSON')); print(d['scenes'][-1]['expected_filename'] if d.get('scenes') else f'scene{int(d.get(\"total_scenes\", 6)):02d}.mp4')")
 
           echo "Creating Draft Release for Android Flow Mailbox: $SESSION_TAG"
-          echo "Expected scenes for ${DURATION}s: $EXPECTED_SCENES (scene01.mp4 .. ${LAST_SCENE})"
+          echo "Expected scenes from pack: $EXPECTED_SCENES (scene01.mp4 .. ${LAST_SCENE})"
 
           gh release create "$SESSION_TAG" \
             --draft \
@@ -208,6 +206,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: avf
+          persist-credentials: false
 
       # -------------------------------------------------------
       # 2. Setup Python (runs in <2s with cached runner python)
@@ -354,8 +353,20 @@ jobs:
 
           flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
           staged_dir = Path("storage/local_videos")
-          duration = int(os.environ.get("AVF_DURATION", "45"))
-          expected_scenes = 9 if duration >= 90 else 6
+
+          # Derive expected scene count directly from flow_scene_pack.json or plan_flow_scenes authority
+          pack_json = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output" / "flow_scene_pack.json"
+          if pack_json.exists():
+              import json
+              pack_data = json.loads(pack_json.read_text(encoding="utf-8"))
+              expected_scenes = pack_data.get("total_scenes", len(pack_data.get("scenes", [])))
+          else:
+              from auto_video_factory.flow_planner import plan_flow_scenes
+              topic    = os.environ.get("AVF_TOPIC", "")
+              duration = int(os.environ.get("AVF_DURATION", "45"))
+              mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+              pack     = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+              expected_scenes = pack.total_scenes
 
           staged_clips = validate_and_stage_flow_clips(
               flow_input,
