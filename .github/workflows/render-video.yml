@@ -146,7 +146,6 @@ jobs:
           gh release create "$SESSION_TAG" \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
-            --draft \
             --title "Flow Ingress Session ${{ github.run_id }}" \
             --notes-file flow_pack_output/flow_checklist.txt \
             flow_pack_output/flow_prompts.txt \
@@ -154,8 +153,8 @@ jobs:
             flow_pack_output/flow_checklist.txt
 
           # Verify the release was actually created before exposing the URL
-          gh release view "$SESSION_TAG" --repo "${{ github.repository }}" --json tagName,isDraft | grep '"isDraft":true' || {
-            echo "::error::Draft release '$SESSION_TAG' was not found after creation. Aborting."
+          gh release view "$SESSION_TAG" --repo "${{ github.repository }}" --json tagName | grep "$SESSION_TAG" || {
+            echo "::error::Session release '$SESSION_TAG' was not found after creation. Aborting."
             exit 1
           }
 

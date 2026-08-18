@@ -12,6 +12,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Any
 
@@ -661,9 +662,11 @@ def strip_clip_audio(input_clip: Path, output_clip: Path) -> Path:
 def validate_clip(clip_path: Path) -> bool:
     """Validate that clip exists, is non-zero, and has a valid video stream."""
     if not clip_path.exists() or clip_path.stat().st_size == 0:
+        logger.error("validate_clip: file does not exist or is 0 bytes: %s", clip_path)
         return False
+    ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
     cmd = [
-        "ffprobe", "-v", "error",
+        ffprobe_bin, "-v", "error",
         "-show_entries", "stream=codec_type,width,height:format=duration",
         "-of", "json",
         str(clip_path),
@@ -671,13 +674,18 @@ def validate_clip(clip_path: Path) -> bool:
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if res.returncode != 0:
+            logger.error("validate_clip: ffprobe returncode %d for %s. stderr: %s", res.returncode, clip_path, res.stderr)
             return False
         data = json.loads(res.stdout)
         streams = data.get("streams", [])
         has_video = any(s.get("codec_type") == "video" for s in streams)
         duration = float(data.get("format", {}).get("duration", 0))
-        return has_video and duration > 0
-    except Exception:
+        if not (has_video and duration > 0):
+            logger.error("validate_clip: invalid stream/duration (has_video=%s, duration=%s) for %s. ffprobe data: %s", has_video, duration, clip_path, data)
+            return False
+        return True
+    except Exception as exc:
+        logger.error("validate_clip: exception probing %s: %s", clip_path, exc)
         return False
 
 
