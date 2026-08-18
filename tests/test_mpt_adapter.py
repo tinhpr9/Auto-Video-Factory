@@ -168,6 +168,7 @@ class TestBuildCliArgs:
         idx = args.index("--video-script-prompt")
         assert "157 từ" in args[idx + 1]
         assert "45 giây" in args[idx + 1]
+        assert "3 đoạn văn" in args[idx + 1]
         args = self._args()
         joined = " ".join(args)
         assert "sk-" not in joined

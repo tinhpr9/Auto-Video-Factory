@@ -171,8 +171,8 @@ def build_cli_args(
     mpt_voice = map_voice(voice)
     
     script_prompt = (
-        f"Viết kịch bản tiếng Việt có độ dài khoảng {word_budget} từ. "
-        f"Đây là kịch bản cho video ngắn {duration} giây."
+        f"Hãy viết kịch bản dẫn chuyện tiếng Việt hoàn chỉnh, hấp dẫn, gồm đúng {paragraphs} đoạn văn chi tiết (tuyệt đối không bỏ dở câu). "
+        f"Tổng độ dài khoảng {word_budget} từ để thời lượng đọc vừa vặn {duration} giây."
     )
 
     return [
