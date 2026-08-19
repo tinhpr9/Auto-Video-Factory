@@ -42,6 +42,9 @@ class TestUpstreamPin:
 
 class TestDurationMapping:
     @pytest.mark.parametrize("duration,expected", [
+        ("15", 1),
+        ("20", 2),
+        ("30", 3),
         ("45", 3),
         ("60", 4),
         ("90", 6),
@@ -49,7 +52,7 @@ class TestDurationMapping:
     def test_duration_to_paragraphs(self, duration, expected):
         assert mpt_adapter.duration_to_paragraphs(duration) == expected
 
-    @pytest.mark.parametrize("bad", ["0", "30", "120", "", "abc", "45.5"])
+    @pytest.mark.parametrize("bad", ["0", "10", "25", "120", "", "abc", "45.5"])
     def test_invalid_duration_raises(self, bad):
         with pytest.raises(ValueError, match=r"duration"):
             mpt_adapter.duration_to_paragraphs(bad)

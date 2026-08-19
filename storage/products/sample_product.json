@@ -1,0 +1,30 @@
+{
+  "product_id": "AFF-DEMO-01",
+  "title": "Bình Giữ Nhiệt Lock&Lock Wave 500ml Inox 304",
+  "description": "Bình giữ nhiệt cao cấp ruột inox 304, giữ nóng 8 giờ, giữ lạnh 12 giờ, nắp silicon chống tràn.",
+  "price": 350000,
+  "currency": "VND",
+  "product_url": "https://example.com/product/locknlock-wave-500",
+  "affiliate_url": "https://aff.example.com/click/demo01",
+  "images": [
+    "storage/products/bottle_front.jpg",
+    "storage/products/bottle_lid.jpg"
+  ],
+  "videos": [],
+  "seller_or_brand": "Lock&Lock Official Store",
+  "features": [
+    "Chất liệu ruột bình inox 304 cao cấp an toàn sức khỏe",
+    "Khả năng giữ nóng 8 giờ và giữ lạnh 12 giờ",
+    "Nắp kín silicon chống tràn 100%",
+    "Dung tích 500ml nhỏ gọn tiện lợi mang theo"
+  ],
+  "verified_claims": [
+    "Giữ nhiệt chuẩn 8 tiếng cho nước nóng và 12 tiếng cho nước lạnh",
+    "Chất liệu thép không gỉ inox 304 đạt chuẩn an toàn thực phẩm"
+  ],
+  "prohibited_or_unverified_claims": [
+    "Giữ đá nguyên khối 7 ngày không tan",
+    "Chống rơi vỡ từ tầng 10 không móp"
+  ],
+  "source": "manual_entry"
+}
