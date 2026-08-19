@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_parser = subparsers.add_parser("plan", help="Generate 3 creative affiliate variants from product.json")
     plan_parser.add_argument("--product", "-p", required=True, help="Path to input product JSON file")
-    plan_parser.add_argument("--duration", "-d", type=int, default=20, help="Target video duration in seconds (15, 20, 30)")
+    plan_parser.add_argument("--duration", "-d", type=int, choices=[15, 20, 30], default=20, help="Target video duration in seconds (15, 20, 30)")
     plan_parser.add_argument("--output-dir", "-o", default="./affiliate_pack", help="Directory to save generated affiliate pack")
 
     return parser

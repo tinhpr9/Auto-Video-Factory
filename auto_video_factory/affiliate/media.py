@@ -13,6 +13,8 @@ from .models import (
     ProductInput,
 )
 
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+
 
 class InsufficientMediaError(RuntimeError):
     """Raised when product media is missing or insufficient to render video scenes."""
@@ -52,7 +54,6 @@ def convert_image_to_vertical_video(
     Guarantees no audio track (-an).
     """
     output_clip.parent.mkdir(parents=True, exist_ok=True)
-    # ffmpeg command to scale and pad to 1080x1920
     vf_filter = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
@@ -77,6 +78,60 @@ def convert_image_to_vertical_video(
     return output_clip
 
 
+def convert_video_to_vertical_video(
+    video_path: Path,
+    output_clip: Path,
+    *,
+    target_duration: float = 5.0,
+    width: int = 1080,
+    height: int = 1920,
+) -> Path:
+    """
+    Normalize product video to 9:16 vertical video (1080x1920).
+    Loops video if shorter than target_duration and strips audio (-an).
+    """
+    output_clip.parent.mkdir(parents=True, exist_ok=True)
+    src_dur = probe_clip_duration(video_path)
+
+    vf_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+    )
+
+    if src_dur > 0 and src_dur < target_duration:
+        # Loop short video so scene visual does not truncate before audio
+        cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1",
+            "-i", str(video_path),
+            "-t", str(target_duration),
+            "-vf", vf_filter,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            str(output_clip),
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-t", str(target_duration),
+            "-vf", vf_filter,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            str(output_clip),
+        ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0 or not output_clip.exists() or output_clip.stat().st_size == 0:
+        if output_clip.exists():
+            output_clip.unlink(missing_ok=True)
+        err = res.stderr.strip() if res.stderr else f"Exit code {res.returncode}"
+        raise RuntimeError(f"Failed to process product video {video_path}: {err}")
+    return output_clip
+
+
 class AffiliateMediaStager:
     """
     Ingests and stages real product media (videos & images) into sequential 9:16 clips.
@@ -90,25 +145,24 @@ class AffiliateMediaStager:
     ) -> list[Path]:
         """
         Stage media files for all scenes in the given affiliate variant.
-        Deterministic order: product videos first, then converted product images.
+        Deterministic unified pool: consumes videos followed by images in unified order.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        media_pool: list[Path] = []
+        unified_media_pool: list[Path] = []
 
-        # 1. Collect existing video files
+        # 1. Collect valid video files
         for v in product.videos:
             p = Path(v)
             if p.exists() and p.stat().st_size > 0:
-                media_pool.append(p)
+                unified_media_pool.append(p)
 
-        # 2. Collect existing image files
-        image_pool: list[Path] = []
+        # 2. Collect valid image files
         for img in product.images:
             p = Path(img)
             if p.exists() and p.stat().st_size > 0:
-                image_pool.append(p)
+                unified_media_pool.append(p)
 
-        if not media_pool and not image_pool:
+        if not unified_media_pool:
             raise InsufficientMediaError(
                 f"No usable product images or videos provided for product '{product.product_id}'."
             )
@@ -117,33 +171,16 @@ class AffiliateMediaStager:
         scene_count = max(len(scenes), 3)
         staged_clips: list[Path] = []
 
-        # Generate each scene clip
+        # Process each scene clip
         for idx in range(1, scene_count + 1):
             out_clip = output_dir / f"scene{idx:02d}.mp4"
             target_dur = scenes[idx - 1].duration_seconds if (idx - 1) < len(scenes) else 5.0
+            source_item = unified_media_pool[(idx - 1) % len(unified_media_pool)]
 
-            if media_pool:
-                # Cycle through real product videos and normalize to 9:16 vertical video
-                source_video = media_pool[(idx - 1) % len(media_pool)]
-                vf_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black"
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", str(source_video),
-                    "-t", str(target_dur),
-                    "-vf", vf_filter,
-                    "-c:v", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    "-an",
-                    str(out_clip),
-                ]
-                res = subprocess.run(cmd, capture_output=True, text=True)
-                if res.returncode != 0 or not out_clip.exists() or out_clip.stat().st_size == 0:
-                    err = res.stderr.strip() if res.stderr else f"Exit code {res.returncode}"
-                    raise RuntimeError(f"Failed to process product video {source_video}: {err}")
-            elif image_pool:
-                # Convert image to 9:16 vertical video
-                source_img = image_pool[(idx - 1) % len(image_pool)]
-                convert_image_to_vertical_video(source_img, out_clip, duration=target_dur)
+            if source_item.suffix.lower() in VIDEO_EXTENSIONS:
+                convert_video_to_vertical_video(source_item, out_clip, target_duration=target_dur)
+            else:
+                convert_image_to_vertical_video(source_item, out_clip, duration=target_dur)
 
             staged_clips.append(out_clip)
 

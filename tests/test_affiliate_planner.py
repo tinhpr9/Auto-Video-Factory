@@ -31,14 +31,14 @@ def sample_product() -> ProductInput:
         "videos": ["storage/products/bottle_demo.mp4"],
         "seller_or_brand": "Lock&Lock Official",
         "features": [
-            "Chất liệu thép không gỉ 304 an toàn thực phẩm",
+            "Chất liệu thép không gỉ 304",
             "Giữ nhiệt nóng 8 giờ, giữ lạnh 12 giờ",
-            "Nắp silicon chống tràn 100%",
-            "Dung tích 500ml nhỏ gọn",
+            "Nắp silicon chống tràn",
+            "Dung tích 500ml",
         ],
         "verified_claims": [
             "Giữ nóng 8 tiếng và giữ lạnh 12 tiếng",
-            "Chất liệu ruột bình là inox 304 không gỉ",
+            "Chất liệu ruột bình là inox 304",
         ],
         "prohibited_or_unverified_claims": [
             "Giữ đá nguyên khối 7 ngày không tan",
@@ -49,7 +49,7 @@ def sample_product() -> ProductInput:
 
 
 # ===========================================================================
-# 1. Triad Variant Planning
+# 1. Triad Variant Planning & Duration Constraints
 # ===========================================================================
 
 class TestAffiliatePackPlanning:
@@ -82,6 +82,12 @@ class TestAffiliatePackPlanning:
         assert v_prob.voice_script != v_three.voice_script
         assert v_three.voice_script != v_comp.voice_script
 
+    @pytest.mark.parametrize("invalid_dur", [0, -10, 10, 25, 45, 60, 90, 120])
+    def test_unsupported_durations_rejected(self, invalid_dur):
+        product = sample_product()
+        with pytest.raises(ValueError, match="Unsupported duration"):
+            plan_affiliate_pack(product, duration_seconds=invalid_dur)
+
 
 # ===========================================================================
 # 2. Fact Grounding & Anti-Hallucination
@@ -99,7 +105,7 @@ class TestPlannerFactGrounding:
                 assert prohibited.lower() not in variant.voice_script.lower()
                 assert prohibited.lower() not in " ".join(variant.on_screen_text).lower()
 
-    def test_no_invented_discount_or_ratings(self):
+    def test_no_invented_claims_or_superlatives(self):
         product = sample_product()
         pack = plan_affiliate_pack(product, duration_seconds=20)
         for variant in pack.variants:
@@ -109,6 +115,8 @@ class TestPlannerFactGrounding:
             assert "giảm 70%" not in script_lower
             assert "5 sao" not in script_lower
             assert "hàng triệu người" not in script_lower
+            assert "dễ hỏng" not in script_lower
+            assert "hoàn toàn an tâm" not in script_lower
 
 
 # ===========================================================================
@@ -123,7 +131,6 @@ class TestScriptQuality:
         for variant in pack.variants:
             words = variant.voice_script.split()
             word_count = len(words)
-            # 15s: 30-55 words; 20s: 40-70 words; 30s: 60-100 words
             min_w = int(duration * 2.0)
             max_w = int(duration * 3.6)
             assert min_w <= word_count <= max_w, (

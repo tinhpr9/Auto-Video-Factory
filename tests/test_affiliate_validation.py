@@ -3,6 +3,7 @@ TDD tests for ProductInput contract, validation, and claim safety (V5 Auto Affil
 """
 from __future__ import annotations
 
+import math
 import pytest
 
 from auto_video_factory.affiliate.models import (
@@ -83,10 +84,33 @@ class TestProductInputContract:
         with pytest.raises(ProductValidationError, match="price"):
             validate_product_input(raw)
 
+    def test_boolean_price_raises(self):
+        raw = sample_raw_product()
+        raw["price"] = True
+        with pytest.raises(ProductValidationError, match="Boolean value not allowed"):
+            validate_product_input(raw)
+
+    def test_nan_or_inf_price_raises(self):
+        raw = sample_raw_product()
+        raw["price"] = float("nan")
+        with pytest.raises(ProductValidationError, match="Finite numeric price required"):
+            validate_product_input(raw)
+
+        raw["price"] = float("inf")
+        with pytest.raises(ProductValidationError, match="Finite numeric price required"):
+            validate_product_input(raw)
+
     def test_invalid_currency_raises(self):
         raw = sample_raw_product()
         raw["currency"] = ""
         with pytest.raises(ProductValidationError, match="currency"):
+            validate_product_input(raw)
+
+    def test_missing_all_features_and_claims_raises(self):
+        raw = sample_raw_product()
+        raw["features"] = []
+        raw["verified_claims"] = []
+        with pytest.raises(ProductValidationError, match="At least 2 verified features or claims required"):
             validate_product_input(raw)
 
 
@@ -107,6 +131,12 @@ class TestClaimGrounding:
             # Prohibited claims must NEVER be in grounded facts
             assert "Chữa dứt điểm" not in f.text
             assert "Trắng răng tức thì" not in f.text
+
+    def test_overlapping_prohibited_and_features_rejected(self):
+        raw = sample_raw_product()
+        raw["features"].append("Chữa dứt điểm 100% viêm nướu sau 3 ngày")
+        with pytest.raises(ProductValidationError, match="Feature/claim overlaps with prohibited list"):
+            validate_product_input(raw)
 
     def test_is_claim_prohibited(self):
         raw = sample_raw_product()

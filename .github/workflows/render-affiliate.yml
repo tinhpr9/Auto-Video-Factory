@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       product_json:
-        description: "JSON sản phẩm hoặc đường dẫn tới file JSON (ví dụ: product.json)"
+        description: "JSON sản phẩm hoặc đường dẫn tới file JSON (ví dụ: storage/products/sample_product.json)"
         required: true
         type: string
-        default: "sample_product.json"
+        default: "storage/products/sample_product.json"
       duration_seconds:
         description: "Thời lượng mục tiêu (giây)"
         required: true
@@ -77,7 +77,7 @@ jobs:
           INPUT_DURATION: ${{ inputs.duration_seconds }}
         run: |
           mkdir -p affiliate_staging
-          # Check if input is a file path or raw JSON
+          # Check if input is a file path or raw JSON safely
           if [ -f "$INPUT_PRODUCT_JSON" ]; then
             cp "$INPUT_PRODUCT_JSON" affiliate_staging/product.json
           else
@@ -94,14 +94,19 @@ jobs:
           cd mpt_repo
           git checkout b42e945b497176c823579f9b1895d9323446de23
           cd ..
-          mkdir -p mpt/resource/fonts
+          mkdir -p mpt_repo/resource/fonts
           if [ -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf ]; then
             cp /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf mpt_repo/resource/fonts/
+          elif [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ]; then
+            cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc mpt_repo/resource/fonts/NotoSans-Bold.ttf
           fi
+          # Install MPT dependencies
+          uv pip install --system -r mpt_repo/requirements.txt || true
 
       - name: Stage Media & Render 3 Affiliate Variants
         env:
           INPUT_DURATION: ${{ inputs.duration_seconds }}
+          INPUT_VOICE: ${{ inputs.voice }}
         run: |
           mkdir -p affiliate-output
           # Copy metadata pack to output
@@ -110,40 +115,62 @@ jobs:
           python - << 'PYEOF'
           import json
           import os
+          import shutil
           import subprocess
+          import sys
           from pathlib import Path
           from auto_video_factory.affiliate import (
               AffiliateMediaStager,
               plan_affiliate_pack,
               validate_product_input,
           )
+          from auto_video_factory.mpt_adapter import (
+              build_cli_args,
+              locate_output_video,
+          )
 
           prod_data = json.loads(Path("affiliate_staging/product.json").read_text(encoding="utf-8"))
           product = validate_product_input(prod_data)
           target_duration = int(os.environ.get("INPUT_DURATION", "20"))
+          voice = os.environ.get("INPUT_VOICE", "marin")
           pack = plan_affiliate_pack(product, duration_seconds=target_duration)
           stager = AffiliateMediaStager()
 
+          mpt_dir = Path("mpt_repo")
+
           for variant in pack.variants:
               var_name = variant.variant_type.value
-              stage_dir = Path(f"affiliate_staging/{var_name}_media")
+              stage_dir = Path(f"affiliate_staging/{var_name}_media").resolve()
+              clips = stager.stage_media_for_variant(product, variant, stage_dir)
+              print(f"Staged {len(clips)} clips for variant {var_name} in {stage_dir}")
+
+              clip_dur = int(variant.scenes[0].duration_seconds) if variant.scenes else 5
+              render_args = build_cli_args(
+                  topic=product.title,
+                  duration=str(target_duration),
+                  voice=voice,
+                  video_source="local",
+                  video_materials=str(stage_dir),
+                  video_clip_duration=clip_dur,
+                  video_script=variant.voice_script,
+              )
+
+              # Execute MPT CLI render
+              cmd = [sys.executable, "cli.py"] + render_args
+              print(f"Rendering variant {var_name}...")
+              res = subprocess.run(cmd, cwd=str(mpt_dir), capture_output=True, text=True)
+              if res.stdout:
+                  print(res.stdout)
+              if res.stderr:
+                  print(res.stderr, file=sys.stderr)
+
               try:
-                  clips = stager.stage_media_for_variant(product, variant, stage_dir)
+                  out_video = locate_output_video(str(mpt_dir))
+                  dst_video = Path(f"affiliate-output/{var_name}.mp4")
+                  shutil.copy2(out_video, dst_video)
+                  print(f"Successfully generated {dst_video} ({dst_video.stat().st_size} bytes)")
               except Exception as exc:
-                  print(f"Warning: staging for {var_name} had media fallback: {exc}")
-                  stage_dir.mkdir(parents=True, exist_ok=True)
-                  # Create minimal 9:16 solid color card clip if no real files on CI runner
-                  fallback_clip = stage_dir / "scene01.mp4"
-                  subprocess.run([
-                      "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=navy:s=1080x1920:d=10",
-                      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(fallback_clip)
-                  ], check=True)
-
-              # Write materials list for MPT
-              mat_file = Path(f"affiliate_staging/{var_name}_materials.txt")
-              mat_file.write_text(str(stage_dir.resolve()), encoding="utf-8")
-
-              print(f"Staged {var_name} media in {stage_dir}")
+                  print(f"Warning: Could not locate rendered output for {var_name}: {exc}")
           PYEOF
 
       - name: Verify Affiliate Output

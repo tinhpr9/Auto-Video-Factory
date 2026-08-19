@@ -1,6 +1,6 @@
 """
 Prompt & Planning Evaluation Harness for V5 Auto Affiliate Factory.
-Verifies factual grounding, anti-hallucination, triad diversity, Vietnamese fluency, and CTA presence.
+Verifies factual grounding, anti-hallucination, prohibited claim isolation, triad diversity, Vietnamese fluency, and CTA presence.
 """
 from __future__ import annotations
 
@@ -41,16 +41,26 @@ def evaluate_affiliate_pack(product_dict: dict[str, Any], duration: int = 20) ->
     scripts = [v.voice_script for v in pack.variants]
     results["checks"]["script_diversity"] = len(set(scripts)) == 3
 
-    # 3. Check: Fact grounding & anti-hallucination
+    # 3. Check: Fact grounding & anti-hallucination against both generic terms & product-specific prohibited claims
     hallucination_detected = False
-    forbidden_terms = [
+    generic_forbidden = [
         "giảm 50%", "giảm 70%", "giảm 80%", "5 sao", "hàng triệu người",
         "chữa dứt điểm", "trắng răng tức thì", "trị khỏi 100%", "tốt nhất thế giới",
+        "dễ hỏng", "hoàn toàn an tâm", "cực kỳ bền bỉ",
     ]
+    product_prohibited = [p.lower() for p in product.prohibited_or_unverified_claims if p]
+
     for v in pack.variants:
         s_lower = v.voice_script.lower()
-        for term in forbidden_terms:
-            if term in s_lower:
+        ost_lower = " ".join(v.on_screen_text).lower()
+
+        for term in generic_forbidden:
+            if term in s_lower or term in ost_lower:
+                hallucination_detected = True
+                break
+
+        for prohib in product_prohibited:
+            if prohib in s_lower or prohib in ost_lower:
                 hallucination_detected = True
                 break
 
@@ -79,11 +89,11 @@ def main() -> int:
         "images": ["img_cuckoo.jpg"],
         "features": [
             "Công nghệ đốt nóng trong IH cao tần",
-            "Lòng nồi gang phủ men gốm chống dính cao cấp",
+            "Lòng nồi gang phủ men gốm",
             "16 chế độ nấu đa dạng",
         ],
         "verified_claims": [
-            "Công nghệ IH giúp hạt cơm chín đều từ trong ra ngoài",
+            "Công nghệ IH giúp hạt cơm chín đều",
         ],
         "prohibited_or_unverified_claims": [
             "Cơm để 1 tháng không ôi thiu",
