@@ -462,7 +462,7 @@ jobs:
           clip_duration = None
           if os.path.exists("staged_clip_duration.txt"):
               try:
-                  clip_duration = float(Path("staged_clip_duration.txt").read_text(encoding="utf-8").strip())
+                  clip_duration = int(round(float(Path("staged_clip_duration.txt").read_text(encoding="utf-8").strip())))
               except Exception:
                   pass
           if clip_duration is None:

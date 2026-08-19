@@ -284,7 +284,7 @@ def build_cli_args(
         args.extend(["--video-script-prompt", video_script_prompt])
 
     if video_clip_duration is not None:
-        args.extend(["--video-clip-duration", str(video_clip_duration)])
+        args.extend(["--video-clip-duration", str(int(round(float(video_clip_duration))))])
 
     if stop_at:
         args.extend(["--stop-at", stop_at])
