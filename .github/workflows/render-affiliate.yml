@@ -49,13 +49,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up ffmpeg & system fonts
-        timeout-minutes: 5
+      - name: Set up ffmpeg & ffprobe
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          ffmpeg-version: "release"
+
+      - name: Verify ffmpeg & tools
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout="15" update -qq || true
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-noto-core || true
           ffmpeg -version | head -1
           ffprobe -version | head -1
 
