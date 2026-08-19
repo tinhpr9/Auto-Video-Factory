@@ -49,15 +49,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system dependencies & Vietnamese fonts
-        timeout-minutes: 5
+      - name: Verify system ffmpeg & tools
+        timeout-minutes: 2
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -y || true
-          sudo apt-get install -y --no-install-recommends \
-            ffmpeg \
-            fonts-noto-core \
-            fonts-dejavu-core || true
           ffmpeg -version | head -1
           ffprobe -version | head -1
 
@@ -92,12 +86,12 @@ jobs:
           git checkout b42e945b497176c823579f9b1895d9323446de23
           cd ..
           mkdir -p mpt_repo/resource/fonts
-          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -n 1)
+          NOTO_FONT=$(find /usr/share/fonts -name "*Sans*.ttf" -o -name "*DejaVu*.ttf" -o -name "*Noto*.ttf" 2>/dev/null | head -n 1)
           if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
             cp "$NOTO_FONT" mpt_repo/resource/fonts/NotoSans-Bold.ttf
             echo "Installed subtitle font from $NOTO_FONT to mpt_repo/resource/fonts/NotoSans-Bold.ttf"
           else
-            echo "::warning::NotoSans font not found in /usr/share/fonts"
+            echo "::warning::Subtitle font not found in /usr/share/fonts, using MPT fallback"
           fi
           # Install MPT dependencies
           uv pip install --system -r mpt_repo/requirements.txt
