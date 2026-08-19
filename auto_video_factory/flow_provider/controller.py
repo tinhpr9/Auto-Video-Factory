@@ -245,12 +245,34 @@ class FlowController:
         record.updated_at = time.time()
         self.store.save_job(record)
 
+        return self._poll_and_resolve_job(
+            record=record,
+            provider_job_id=provider_job_id,
+            start_time=start_time,
+            credit_before=res.credit_before,
+            credit_after=res.credit_after,
+        )
+
+    def _poll_and_resolve_job(
+        self,
+        record: FlowJobRecord,
+        provider_job_id: str,
+        start_time: Optional[float] = None,
+        credit_before: Optional[int] = None,
+        credit_after: Optional[int] = None,
+    ) -> Optional[FlowJobResult]:
+        """
+        Bounded polling state machine: monitors an in-flight provider job until terminal state
+        (COMPLETED, FAILED, USER_INTERACTION_REQUIRED, or TIMEOUT).
+        Applies retry policy to transient poll errors without ever calling generate_video().
+        """
+        start_time = start_time or time.time()
         poll_start = time.time()
         poll_failures = 0
 
         while time.time() - poll_start < self.poll_timeout_s:
             if self._is_safety_paused():
-                log.warning("Safety pause encountered during polling loop for job %s", req.job_id)
+                log.warning("Safety pause encountered during polling loop for job %s", record.job_id)
                 return None
 
             try:
@@ -258,7 +280,7 @@ class FlowController:
             except Exception as exc:
                 log.exception("Provider exception during poll for %s: %s", provider_job_id, exc)
                 polled_res = FlowJobResult(
-                    job_id=req.job_id,
+                    job_id=record.job_id,
                     provider_job_id=provider_job_id,
                     status=FlowJobStatus.FAILED,
                     failure_class=FlowFailureClass.NETWORK if isinstance(exc, (ConnectionError, TimeoutError)) else FlowFailureClass.UNKNOWN,
@@ -282,7 +304,7 @@ class FlowController:
                     record.updated_at = time.time()
                     self.store.save_job(record)
                     return FlowJobResult(
-                        job_id=req.job_id,
+                        job_id=record.job_id,
                         provider_job_id=provider_job_id,
                         status=FlowJobStatus.FAILED,
                         failure_class=FlowFailureClass.DOWNLOAD_FAILED,
@@ -294,14 +316,15 @@ class FlowController:
                 record.updated_at = time.time()
                 self.store.save_job(record)
 
+                polled_res.job_id = record.job_id
                 polled_res.output_files = valid_files
-                polled_res.credit_before = res.credit_before
-                polled_res.credit_after = res.credit_after
+                polled_res.credit_before = credit_before
+                polled_res.credit_after = credit_after
                 polled_res.elapsed_seconds = time.time() - start_time
                 return polled_res
 
             elif polled_res.status == FlowJobStatus.USER_INTERACTION_REQUIRED or polled_res.failure_class == FlowFailureClass.USER_INTERACTION_REQUIRED:
-                log.error("USER_INTERACTION_REQUIRED during poll for job %s. Halting.", req.job_id)
+                log.error("USER_INTERACTION_REQUIRED during poll for job %s. Halting.", record.job_id)
                 with self._mutex:
                     self.is_paused = True
                 record.status = FlowJobStatus.USER_INTERACTION_REQUIRED
@@ -309,6 +332,7 @@ class FlowController:
                 record.failure_message = polled_res.failure_message
                 record.updated_at = time.time()
                 self.store.save_job(record)
+                polled_res.job_id = record.job_id
                 return polled_res
 
             elif polled_res.status == FlowJobStatus.FAILED:
@@ -325,13 +349,15 @@ class FlowController:
                 record.failure_message = polled_res.failure_message
                 record.updated_at = time.time()
                 self.store.save_job(record)
+                polled_res.job_id = record.job_id
                 return polled_res
 
-            # Still PENDING/GENERATING -> wait for next poll
+            # Still PENDING/GENERATING -> reset consecutive failure counter and wait for next poll
+            poll_failures = 0
             time.sleep(self.poll_interval_s)
 
         # Polling timeout exceeded
-        log.error("Generation poll timed out after %.1fs for job %s", self.poll_timeout_s, req.job_id)
+        log.error("Generation poll timed out after %.1fs for job %s", self.poll_timeout_s, record.job_id)
         record.status = FlowJobStatus.FAILED
         record.failure_class = FlowFailureClass.TIMEOUT
         record.failure_message = f"Generation poll timed out after {self.poll_timeout_s}s"
@@ -339,7 +365,7 @@ class FlowController:
         self.store.save_job(record)
 
         return FlowJobResult(
-            job_id=req.job_id,
+            job_id=record.job_id,
             provider_job_id=provider_job_id,
             status=FlowJobStatus.FAILED,
             failure_class=FlowFailureClass.TIMEOUT,
@@ -351,7 +377,7 @@ class FlowController:
         On crash/restart:
         1. Restores unfulfilled QUEUED or RETRY_WAIT jobs into self.queue.
         2. Handles ambiguous GENERATING jobs without provider_job_id via reconciliation or fail-closed mark.
-        3. Polls and resolves active PENDING jobs.
+        3. Polls and monitors active PENDING/GENERATING jobs with provider_job_id to terminal completion.
         """
         results = []
         active_jobs = self.store.list_active_jobs()
@@ -381,6 +407,13 @@ class FlowController:
                     job.provider_job_id = recon.provider_job_id
                     job.status = FlowJobStatus.PENDING
                     self.store.save_job(job)
+                    resolved = self._poll_and_resolve_job(
+                        record=job,
+                        provider_job_id=job.provider_job_id,
+                        start_time=job.created_at,
+                    )
+                    if resolved is not None:
+                        results.append(resolved)
                 else:
                     log.error("Ambiguous crash for job %s; marking SUBMISSION_AMBIGUOUS without auto-regenerating", job.job_id)
                     job.status = FlowJobStatus.SUBMISSION_AMBIGUOUS
@@ -391,49 +424,12 @@ class FlowController:
 
             elif job.status in (FlowJobStatus.PENDING, FlowJobStatus.GENERATING) and job.provider_job_id:
                 log.info("Resuming active job %s (provider_job_id: %s)", job.job_id, job.provider_job_id)
-                polled = self.provider.poll(job.provider_job_id)
-
-                if polled.status == FlowJobStatus.COMPLETED:
-                    try:
-                        files = self.provider.download(job.provider_job_id, self.output_dir)
-                    except Exception:
-                        files = []
-
-                    valid_files = [f for f in files if f.exists() and f.is_file() and f.stat().st_size > 0]
-                    if valid_files:
-                        job.status = FlowJobStatus.COMPLETED
-                        job.output_paths = valid_files
-                        job.updated_at = time.time()
-                        self.store.save_job(job)
-                        polled.output_files = valid_files
-                        results.append(polled)
-                    else:
-                        job.status = FlowJobStatus.FAILED
-                        job.failure_class = FlowFailureClass.DOWNLOAD_FAILED
-                        job.failure_message = "Download produced empty artifacts"
-                        job.updated_at = time.time()
-                        self.store.save_job(job)
-                        polled.status = FlowJobStatus.FAILED
-                        polled.failure_class = FlowFailureClass.DOWNLOAD_FAILED
-                        polled.failure_message = "Download produced empty artifacts"
-                        results.append(polled)
-
-                elif polled.status == FlowJobStatus.USER_INTERACTION_REQUIRED or polled.failure_class == FlowFailureClass.USER_INTERACTION_REQUIRED:
-                    with self._mutex:
-                        self.is_paused = True
-                    job.status = FlowJobStatus.USER_INTERACTION_REQUIRED
-                    job.failure_class = FlowFailureClass.USER_INTERACTION_REQUIRED
-                    job.failure_message = polled.failure_message
-                    job.updated_at = time.time()
-                    self.store.save_job(job)
-                    results.append(polled)
-
-                elif polled.status == FlowJobStatus.FAILED:
-                    job.status = FlowJobStatus.FAILED
-                    job.failure_class = polled.failure_class or FlowFailureClass.UNKNOWN
-                    job.failure_message = polled.failure_message
-                    job.updated_at = time.time()
-                    self.store.save_job(job)
-                    results.append(polled)
+                resolved = self._poll_and_resolve_job(
+                    record=job,
+                    provider_job_id=job.provider_job_id,
+                    start_time=job.created_at,
+                )
+                if resolved is not None:
+                    results.append(resolved)
 
         return results
