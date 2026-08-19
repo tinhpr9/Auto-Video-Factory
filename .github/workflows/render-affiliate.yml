@@ -17,7 +17,7 @@ on:
       duration_seconds:
         description: "Thời lượng mục tiêu (giây)"
         required: true
-        default: "20"
+        default: "15"
         type: choice
         options:
           - "15"
@@ -51,19 +51,11 @@ jobs:
 
       - name: Install system dependencies & Vietnamese fonts
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ffmpeg \
             fonts-noto-core \
-            fonts-noto-cjk \
             fonts-dejavu-core
-          # Ensure font directory exists
-          mkdir -p mpt/resource/fonts
-          if [ -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf ]; then
-            cp /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf mpt/resource/fonts/
-          elif [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ]; then
-            cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc mpt/resource/fonts/NotoSans-Bold.ttf
-          fi
 
       - name: Install Python dependencies
         run: |
@@ -95,10 +87,12 @@ jobs:
           git checkout b42e945b497176c823579f9b1895d9323446de23
           cd ..
           mkdir -p mpt_repo/resource/fonts
-          if [ -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf ]; then
-            cp /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf mpt_repo/resource/fonts/
-          elif [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ]; then
-            cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc mpt_repo/resource/fonts/NotoSans-Bold.ttf
+          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -n 1)
+          if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
+            cp "$NOTO_FONT" mpt_repo/resource/fonts/NotoSans-Bold.ttf
+            echo "Installed subtitle font from $NOTO_FONT to mpt_repo/resource/fonts/NotoSans-Bold.ttf"
+          else
+            echo "::warning::NotoSans font not found in /usr/share/fonts"
           fi
           # Install MPT dependencies
           uv pip install --system -r mpt_repo/requirements.txt
@@ -141,7 +135,7 @@ jobs:
 
           prod_data = json.loads(Path("affiliate_staging/product.json").read_text(encoding="utf-8"))
           product = validate_product_input(prod_data)
-          target_duration = int(os.environ.get("INPUT_DURATION", "20"))
+          target_duration = int(os.environ.get("INPUT_DURATION", "15"))
           voice = os.environ.get("INPUT_VOICE", "marin")
           pack = plan_affiliate_pack(product, duration_seconds=target_duration)
           stager = AffiliateMediaStager()
