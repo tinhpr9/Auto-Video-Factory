@@ -306,8 +306,11 @@ class GeminiVideoProvider(VisualProvider):
             raise BillingBlockedError("Missing GEMINI_API_KEY for video generation.")
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateVideos"
+        prompt_text = scene.prompt
+        if scene.negative_constraints:
+            prompt_text += f" Negative constraints: {', '.join(scene.negative_constraints)}."
         payload = {
-            "prompt": scene.prompt,
+            "prompt": prompt_text,
             "aspectRatio": "9:16",
             "durationSeconds": scene.duration_target,
         }
@@ -325,14 +328,21 @@ class GeminiVideoProvider(VisualProvider):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 res_data = json.loads(resp.read().decode("utf-8"))
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                # If raw video bytes or download uri
                 video_bytes = res_data.get("video", {}).get("bytesBase64Encoded")
-                if video_bytes:
-                    import base64
-                    raw_tmp = output_path.with_suffix(".tmp.mp4")
-                    raw_tmp.write_bytes(base64.b64decode(video_bytes))
-                    self.strip_audio(raw_tmp, output_path)
-                    raw_tmp.unlink(missing_ok=True)
+                if not video_bytes:
+                    raise RuntimeError("Gemini Video API returned no base64 video data.")
+
+                import base64
+                raw_tmp = output_path.with_suffix(".tmp.mp4")
+                raw_tmp.write_bytes(base64.b64decode(video_bytes))
+                self.strip_audio(raw_tmp, output_path)
+                raw_tmp.unlink(missing_ok=True)
+
+                if not self.validate_scene_clip(output_path):
+                    if output_path.exists():
+                        output_path.unlink(missing_ok=True)
+                    raise RuntimeError(f"Generated scene clip failed validation: {output_path}")
+
                 return output_path
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="ignore")
@@ -344,12 +354,13 @@ class GeminiVideoProvider(VisualProvider):
         except Exception as e:
             if isinstance(e, BillingBlockedError):
                 raise
-            raise RuntimeError(f"Gemini Video connection error: {e}") from e
+            raise RuntimeError(f"Gemini Video generation error: {e}") from e
 
     def strip_audio(self, input_video: Path, output_video: Path) -> Path:
         """
         Ensure scene clip has no native audio so Vietnamese Edge TTS + BGM
         remain the sole audio authority.
+        MUST FAIL CLOSED: Never copy original audio-bearing clip if stripping fails.
         """
         output_video.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -361,9 +372,57 @@ class GeminiVideoProvider(VisualProvider):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0 or not output_video.exists() or output_video.stat().st_size == 0:
-            # Fallback: copy input file directly
-            import shutil
-            shutil.copy2(input_video, output_video)
+            if output_video.exists():
+                output_video.unlink(missing_ok=True)
+            err_msg = result.stderr.strip() if result.stderr else f"empty output or exit code {result.returncode}"
+            raise RuntimeError(
+                f"Fail-closed: Audio stripping failed for {input_video} ({err_msg}). "
+                "Native audio must not leak into production."
+            )
+
+        # Verify no audio streams remain — MUST be fail-closed
+        cmd_probe = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=codec_type",
+            "-of", "json",
+            str(output_video),
+        ]
+        try:
+            probe_res = subprocess.run(cmd_probe, capture_output=True, text=True, timeout=10)
+        except (FileNotFoundError, OSError) as exc:
+            output_video.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Fail-closed: ffprobe unavailable for audio verification of {output_video}: {exc}. "
+                "Cannot confirm zero-audio state."
+            ) from exc
+        except subprocess.TimeoutExpired:
+            output_video.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Fail-closed: ffprobe timed out verifying {output_video}. "
+                "Cannot confirm zero-audio state."
+            )
+
+        if probe_res.returncode != 0:
+            output_video.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Fail-closed: ffprobe failed verifying {output_video}: {probe_res.stderr.strip()}"
+            )
+
+        try:
+            probe_data = json.loads(probe_res.stdout)
+            audio_streams = [s for s in probe_data.get("streams", []) if s.get("codec_type") == "audio"]
+            if audio_streams:
+                output_video.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Fail-closed: {output_video} still contains {len(audio_streams)} audio stream(s) after stripping."
+                )
+        except json.JSONDecodeError as exc:
+            output_video.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Fail-closed: Could not parse ffprobe output for {output_video}: {exc}"
+            ) from exc
+
         return output_video
 
     def validate_scene_clip(self, clip_path: Path) -> bool:

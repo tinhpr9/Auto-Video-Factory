@@ -198,6 +198,89 @@ class TestVideoValidation:
         p = GeminiVideoProvider()
         assert not p.validate_scene_clip(empty)
 
+    @patch("subprocess.run")
+    def test_validate_valid_clip(self, mock_run, tmp_path):
+        valid = tmp_path / "valid.mp4"
+        valid.write_bytes(b"fake_mp4_bytes")
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "streams": [{"codec_type": "video", "width": 720, "height": 1280}],
+                "format": {"duration": "4.5"},
+            }),
+        )
+        p = GeminiVideoProvider()
+        assert p.validate_scene_clip(valid)
+
+    @patch("subprocess.run")
+    def test_validate_audio_only_clip_returns_false(self, mock_run, tmp_path):
+        audio_clip = tmp_path / "audio.mp4"
+        audio_clip.write_bytes(b"fake_audio_bytes")
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "streams": [{"codec_type": "audio"}],
+                "format": {"duration": "4.5"},
+            }),
+        )
+        p = GeminiVideoProvider()
+        assert not p.validate_scene_clip(audio_clip)
+
+
+class TestAudioStripping:
+    @patch("subprocess.run")
+    def test_strip_audio_success(self, mock_run, tmp_path):
+        inp = tmp_path / "input.mp4"
+        inp.write_bytes(b"sample_data")
+        out = tmp_path / "output.mp4"
+
+        # First call is ffmpeg (creates output file), second call is ffprobe (checks audio streams)
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[0] == "ffmpeg":
+                out.write_bytes(b"stripped_video_data")
+                return MagicMock(returncode=0, stderr="")
+            elif cmd[0] == "ffprobe":
+                return MagicMock(returncode=0, stdout=json.dumps({"streams": []}))
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        p = GeminiVideoProvider()
+        res = p.strip_audio(inp, out)
+        assert res == out
+        assert out.exists()
+
+    @patch("subprocess.run")
+    def test_strip_audio_ffmpeg_failure_raises_and_cleans(self, mock_run, tmp_path):
+        inp = tmp_path / "input.mp4"
+        inp.write_bytes(b"sample_data")
+        out = tmp_path / "output.mp4"
+
+        mock_run.return_value = MagicMock(returncode=1, stderr="FFmpeg syntax error")
+        p = GeminiVideoProvider()
+        with pytest.raises(RuntimeError, match="Fail-closed: Audio stripping failed"):
+            p.strip_audio(inp, out)
+        assert not out.exists()
+
+    @patch("subprocess.run")
+    def test_strip_audio_lingering_audio_raises_and_cleans(self, mock_run, tmp_path):
+        inp = tmp_path / "input.mp4"
+        inp.write_bytes(b"sample_data")
+        out = tmp_path / "output.mp4"
+
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[0] == "ffmpeg":
+                out.write_bytes(b"video_with_audio")
+                return MagicMock(returncode=0, stderr="")
+            elif cmd[0] == "ffprobe":
+                return MagicMock(returncode=0, stdout=json.dumps({"streams": [{"codec_type": "audio"}]}))
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = fake_run
+        p = GeminiVideoProvider()
+        with pytest.raises(RuntimeError, match="Fail-closed.*still contains.*audio stream"):
+            p.strip_audio(inp, out)
+        assert not out.exists()
+
 
 class TestGenerateSceneClip:
     def test_generate_missing_key_raises_billing_error(self, tmp_path):
@@ -220,6 +303,40 @@ class TestGenerateSceneClip:
         scene = p.plan_scenes(topic="Topic", duration_seconds=45, quality_mode="smoke", max_seconds=10)[0]
         with pytest.raises(BillingBlockedError, match="Gemini Video API blocked"):
             p.generate_scene_clip(scene, tmp_path / "out.mp4", "valid_key")
+
+    @patch("urllib.request.urlopen")
+    def test_generate_missing_video_bytes_raises(self, mock_urlopen, tmp_path):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"video": {}}).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        p = GeminiVideoProvider()
+        scene = p.plan_scenes(topic="Topic", duration_seconds=45, quality_mode="smoke", max_seconds=10)[0]
+        with pytest.raises(RuntimeError, match="returned no base64 video data"):
+            p.generate_scene_clip(scene, tmp_path / "out.mp4", "valid_key")
+
+    @patch("urllib.request.urlopen")
+    def test_generate_scene_clip_success_decodes_and_validates(self, mock_urlopen, tmp_path):
+        import base64
+        fake_b64 = base64.b64encode(b"dummy_video_payload").decode("ascii")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "video": {"bytesBase64Encoded": fake_b64}
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        p = GeminiVideoProvider()
+        p.strip_audio = MagicMock(side_effect=lambda src, dst: dst.write_bytes(b"stripped_bytes") or dst)
+        p.validate_scene_clip = MagicMock(return_value=True)
+
+        scene = p.plan_scenes(topic="Topic", duration_seconds=45, quality_mode="smoke", max_seconds=10)[0]
+        out_file = tmp_path / "scene_01.mp4"
+        res = p.generate_scene_clip(scene, out_file, "valid_key")
+        assert res == out_file
+        assert p.strip_audio.called
+        assert p.validate_scene_clip.called
 
 
 # ===========================================================================

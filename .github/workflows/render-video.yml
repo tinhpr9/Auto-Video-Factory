@@ -279,6 +279,8 @@ jobs:
               load_and_validate_flow_session,
           )
 
+          from auto_video_factory.visual_provider import get_visual_provider
+
           provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
           session  = os.environ.get("AVF_FLOW_SESSION", "").strip()
           topic    = os.environ.get("AVF_TOPIC", "")
@@ -287,7 +289,23 @@ jobs:
 
           print(f"Executing Preflight for Visual Provider: {provider}")
 
-          if provider == "flow_clips":
+          if provider == "gemini_video":
+              prov_obj = get_visual_provider("gemini_video")
+              api_key = os.environ.get("GEMINI_API_KEY", "")
+              check = prov_obj.preflight_check(api_key)
+              if check.get("status") != "ok":
+                  print(f"::error::Gemini Video preflight failed: {check.get('message')}")
+                  sys.exit(1)
+              print(f"Gemini Video Preflight: {check.get('message')}")
+          elif provider == "pexels":
+              prov_obj = get_visual_provider("pexels")
+              api_key = os.environ.get("PEXELS_API_KEY", "")
+              check = prov_obj.preflight_check(api_key)
+              if check.get("status") != "ok":
+                  print(f"::error::Pexels preflight failed: {check.get('message')}")
+                  sys.exit(1)
+              print(f"Pexels Preflight: {check.get('message')}")
+          elif provider == "flow_clips":
               pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
               pack_dir.mkdir(parents=True, exist_ok=True)
 
@@ -450,8 +468,9 @@ jobs:
           with open("staged_gemini_materials.txt", "w", encoding="utf-8") as f:
               f.write(",".join(generated_clips))
 
+          clip_target_sec = scenes[0].duration_target if scenes else 8
           with open("staged_clip_duration.txt", "w", encoding="utf-8") as f:
-              f.write("8")
+              f.write(str(clip_target_sec))
           PYEOF
 
       # -------------------------------------------------------
@@ -683,6 +702,7 @@ jobs:
               except Exception:
                   pass
 
+          video_source = "local" if provider in ("gemini_video", "flow_clips") else os.environ.get("AVF_VIDEO_SOURCE", "pexels")
           meta = sanitize_result_metadata({
               "status": "ok",
               "task_id": task_id,
@@ -696,7 +716,7 @@ jobs:
               "topic_length": len(os.environ.get("AVF_TOPIC", "")),
               "duration_input": os.environ.get("AVF_DURATION"),
               "voice": os.environ.get("AVF_VOICE"),
-              "video_source": video_source if 'video_source' in locals() else os.environ.get("AVF_VIDEO_SOURCE"),
+              "video_source": video_source,
               "video_size_bytes": os.path.getsize(os.path.join(out_dir, "video.mp4")),
           })
           with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as f:
