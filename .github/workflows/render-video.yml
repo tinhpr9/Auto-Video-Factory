@@ -4,19 +4,21 @@ name: Auto Video Factory
 # MoneyPrinterTurbo — GitHub Actions renderer
 # Upstream: https://github.com/harry0703/MoneyPrinterTurbo
 # Pinned SHA: b42e945b497176c823579f9b1895d9323446de23
+# Visual Quality: Google Flow Quality Pipeline & Scene Planner (V4.3)
 # ============================================================
 #
 # REQUIRED SECRETS (Settings → Secrets and variables → Actions):
-#   PEXELS_API_KEY   — free tier at https://www.pexels.com/api/
-#   GEMINI_API_KEY   — Google Gemini API key (free tier available)
+#   GEMINI_API_KEY   — Google Gemini API key (free tier for script generation)
+#   PEXELS_API_KEY   — Pexels API key (only required when visual_provider=pexels)
 #
 # OPTIONAL SECRETS:
 #   PIXABAY_API_KEY  — fallback video source (pixabay.com)
-#   LLM_BASE_URL     — custom OpenAI-compatible endpoint
 #
 # How to run:
 #   Actions → Auto Video Factory → Run workflow
-#   Fill in topic, duration, voice → Submit → download Artifacts
+#   1. Mode "prepare_flow_pack": Generates Scene Pack JSON, copyable prompts, and mobile checklist.
+#   2. Mode "flow_clips": Composes video from staged Google Flow clips (Zero Pexels leakage).
+#   3. Mode "pexels": Baseline free stock footage rendering.
 
 on:
   workflow_dispatch:
@@ -28,14 +30,14 @@ on:
       duration_seconds:
         description: "Độ dài mục tiêu"
         required: true
-        default: "60"
+        default: "45"
         type: choice
         options:
           - "45"
           - "60"
           - "90"
       voice:
-        description: "Giọng kể (Edge TTS — miễn phí)"
+        description: "Giọng kể (Edge TTS — tiếng Việt chuẩn)"
         required: true
         default: marin
         type: choice
@@ -43,28 +45,157 @@ on:
           - marin
           - onyx
       video_source:
-        description: "Nguồn video (pexels cần PEXELS_API_KEY)"
+        description: "Nguồn video dự phòng"
         required: true
         default: pexels
         type: choice
         options:
           - pexels
           - pixabay
+      visual_provider:
+        description: "Nhà cung cấp hình ảnh (flow_clips, prepare_flow_pack, pexels)"
+        required: true
+        default: flow_clips
+        type: choice
+        options:
+          - flow_clips
+          - prepare_flow_pack
+          - pexels
+      flow_mode:
+        description: "Chế độ Flow credit (flow_balanced: Omni Flash + Climax Veo Quality)"
+        required: true
+        default: flow_balanced
+        type: choice
+        options:
+          - flow_balanced
+          - flow_economy
+          - flow_quality
+      flow_session:
+        description: "Flow Session Tag (ví dụ: flow-session-32166245511 hoặc để trống nếu dùng storage/flow_videos/)"
+        required: false
+        default: ""
+        type: string
 
+# Workflow-level: minimal read-only baseline for all paths.
+# The prepare job overrides to contents: write for Draft Release creation.
 permissions:
   contents: read
 
 jobs:
+  # ============================================================
+  # JOB A: prepare_flow_pack — generates Scene Pack + Draft Release mailbox
+  # Requires contents: write to create the Draft Release.
+  # Does NOT run MoneyPrinterTurbo.
+  # ============================================================
+  prepare:
+    if: inputs.visual_provider == 'prepare_flow_pack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # Required for: gh release create (Draft Release mailbox)
+    env:
+      AVF_TOPIC: ${{ inputs.topic }}
+      AVF_DURATION: ${{ inputs.duration_seconds }}
+      AVF_FLOW_MODE: ${{ inputs.flow_mode || 'flow_balanced' }}
+
+    steps:
+      - name: Checkout Auto-Video-Factory
+        uses: actions/checkout@v4
+        with:
+          path: avf
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate Flow Scene Pack
+        run: |
+          python - << 'PYEOF'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.flow_planner import plan_flow_scenes, export_flow_pack
+
+          topic    = os.environ.get("AVF_TOPIC", "")
+          duration = int(os.environ.get("AVF_DURATION", "45"))
+          mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+
+          pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+          pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
+          paths = export_flow_pack(pack, pack_dir)
+          print(f"Generated Flow Scene Pack: {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
+          print(f"Pack files: {list(paths.values())}")
+          PYEOF
+
+      - name: Create Flow Session Draft Release and Upload Artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SESSION_TAG="flow-session-${{ github.run_id }}"
+          PACK_JSON="flow_pack_output/flow_scene_pack.json"
+
+          # Derive expected scene count and last scene filename directly from generated FlowScenePack
+          EXPECTED_SCENES=$(python -c "import json; d=json.load(open('$PACK_JSON')); print(d.get('total_scenes', len(d.get('scenes', []))))")
+          LAST_SCENE=$(python -c "import json; d=json.load(open('$PACK_JSON')); print(d['scenes'][-1]['expected_filename'] if d.get('scenes') else f'scene{int(d.get(\"total_scenes\", 6)):02d}.mp4')")
+
+          echo "Creating Draft Release for Android Flow Mailbox: $SESSION_TAG"
+          echo "Expected scenes from pack: $EXPECTED_SCENES (scene01.mp4 .. ${LAST_SCENE})"
+
+          gh release create "$SESSION_TAG" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Flow Ingress Session ${{ github.run_id }}" \
+            --notes-file flow_pack_output/flow_checklist.txt \
+            flow_pack_output/flow_prompts.txt \
+            flow_pack_output/flow_scene_pack.json \
+            flow_pack_output/flow_checklist.txt
+
+          # Verify the release was actually created before exposing the URL
+          gh release view "$SESSION_TAG" --repo "${{ github.repository }}" --json tagName | grep "$SESSION_TAG" || {
+            echo "::error::Session release '$SESSION_TAG' was not found after creation. Aborting."
+            exit 1
+          }
+
+          UPLOAD_URL="https://github.com/${{ github.repository }}/releases/edit/$SESSION_TAG"
+          echo "FLOW_UPLOAD_URL=$UPLOAD_URL" >> $GITHUB_ENV
+
+          # Add mobile workflow summary with dynamic scene count
+          echo "## 📱 Google Flow Mobile Ingress Session" >> $GITHUB_STEP_SUMMARY
+          echo "**Session Tag:** \`$SESSION_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Android Upload URL:** [Upload Clips Here]($UPLOAD_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Steps for Android:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Open Google Flow and generate the **${EXPECTED_SCENES} clips** using \`flow_prompts.txt\`." >> $GITHUB_STEP_SUMMARY
+          echo "2. Open the [Upload URL]($UPLOAD_URL) and attach \`scene01.mp4\` through \`${LAST_SCENE}\`." >> $GITHUB_STEP_SUMMARY
+          echo "3. Run render workflow with \`visual_provider=flow_clips\` and \`flow_session=$SESSION_TAG\`." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Flow Quality Pack Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-quality-pack
+          path: flow_pack_output/
+          retention-days: 3
+
+  # ============================================================
+  # JOB B: render — composites video using flow_clips or pexels
+  # Uses contents: read only (no release creation).
+  # ============================================================
   render:
+    if: inputs.visual_provider != 'prepare_flow_pack'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read    # render/pexels/flow_clips must not create or modify releases
     env:
-      # Passed as env vars — never injected directly into shell strings
       AVF_TOPIC: ${{ inputs.topic }}
       AVF_DURATION: ${{ inputs.duration_seconds }}
       AVF_VOICE: ${{ inputs.voice }}
       AVF_VIDEO_SOURCE: ${{ inputs.video_source }}
-      # Pinned upstream SHA — single source of truth
+      AVF_VISUAL_PROVIDER: ${{ inputs.visual_provider || 'flow_clips' }}
+      AVF_FLOW_MODE: ${{ inputs.flow_mode || 'flow_balanced' }}
+      AVF_FLOW_SESSION: ${{ inputs.flow_session }}
       MPT_SHA: b42e945b497176c823579f9b1895d9323446de23
       MPT_REPO: https://github.com/harry0703/MoneyPrinterTurbo
 
@@ -76,29 +207,131 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: avf
+          persist-credentials: false
 
       # -------------------------------------------------------
-      # 2. Checkout MoneyPrinterTurbo at pinned SHA
-      #    (shallow clone at exact commit for reproducibility)
+      # 2. Setup Python (runs in <2s with cached runner python)
+      # -------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # -------------------------------------------------------
+      # 3. Fail-fast Secrets Validation and Provider Preflight
+      # -------------------------------------------------------
+      - name: Validate secrets and provider preflight
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::Missing repository secret GEMINI_API_KEY for video rendering. Please set it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          if [ "$AVF_VISUAL_PROVIDER" = "pexels" ] && [ -z "$PEXELS_API_KEY" ]; then
+            echo "::error::Missing repository secret PEXELS_API_KEY for pexels visual provider."
+            exit 1
+          fi
+
+          # If flow_session is specified for flow_clips, download manifest and clips from session release
+          if [ "$AVF_VISUAL_PROVIDER" = "flow_clips" ] && [ -n "$AVF_FLOW_SESSION" ]; then
+            flow_input="$GITHUB_WORKSPACE/avf/storage/flow_videos"
+            mkdir -p "$flow_input"
+            echo "Downloading Flow session manifest and clips from release: $AVF_FLOW_SESSION"
+            gh release download "$AVF_FLOW_SESSION" \
+              --repo "${{ github.repository }}" \
+              -p "*.mp4" \
+              -p "flow_scene_pack.json" \
+              -D "$flow_input" || {
+                echo "::error::Failed to download Flow session release '$AVF_FLOW_SESSION'. FINAL_STATUS=INVALID_FLOW_SESSION"
+                exit 1
+              }
+          fi
+
+          python - << 'PYEOF'
+          import os, sys, shutil
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.flow_planner import (
+              plan_flow_scenes,
+              export_flow_pack,
+              load_and_validate_flow_session,
+          )
+
+          provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
+          session  = os.environ.get("AVF_FLOW_SESSION", "").strip()
+          topic    = os.environ.get("AVF_TOPIC", "")
+          duration = int(os.environ.get("AVF_DURATION", "45"))
+          mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+
+          print(f"Executing Preflight for Visual Provider: {provider}")
+
+          if provider == "flow_clips":
+              pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
+              pack_dir.mkdir(parents=True, exist_ok=True)
+
+              if session:
+                  flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
+                  manifest_file = flow_input / "flow_scene_pack.json"
+                  try:
+                      session_pack = load_and_validate_flow_session(manifest_file, clips_dir=flow_input)
+                  except Exception as e:
+                      print(f"::error::Flow session validation failed for '{session}': {e}")
+                      print("FINAL_STATUS=INVALID_FLOW_SESSION")
+                      sys.exit(1)
+
+                  # Authoritative session manifest wins over dispatch drift
+                  shutil.copy2(manifest_file, pack_dir / "flow_scene_pack.json")
+                  print(f"Authoritative Session Pack Loaded from {session}:")
+                  print(f"  - Topic: {session_pack.topic}")
+                  print(f"  - Requested Duration: {session_pack.requested_duration_seconds}s")
+                  print(f"  - Mode: {session_pack.flow_mode}")
+                  print(f"  - Total Scenes: {session_pack.total_scenes}")
+
+                  # Export authoritative session variables to GITHUB_ENV so downstream steps use session values
+                  env_file = os.environ.get("GITHUB_ENV")
+                  if env_file:
+                      with open(env_file, "a", encoding="utf-8") as f:
+                          f.write(f"AVF_TOPIC={session_pack.topic}\n")
+                          f.write(f"AVF_DURATION={session_pack.requested_duration_seconds}\n")
+                          f.write(f"AVF_FLOW_MODE={session_pack.flow_mode}\n")
+                          f.write(f"EXPECTED_SCENES={session_pack.total_scenes}\n")
+              else:
+                  # Local developer path without flow_session
+                  pack = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+                  paths = export_flow_pack(pack, pack_dir)
+                  print(f"Generated Flow Scene Pack (Local): {pack.total_scenes} scenes, Est. {pack.estimated_total_credits} credits.")
+
+          print("Preflight validation: OK")
+          PYEOF
+
+      # -------------------------------------------------------
+      # 4. Checkout MoneyPrinterTurbo at pinned SHA
       # -------------------------------------------------------
       - name: Checkout MoneyPrinterTurbo at pinned SHA
         run: |
-          git clone "$MPT_REPO" mpt
+          git clone --depth 1 "$MPT_REPO" mpt || git clone "$MPT_REPO" mpt
           cd mpt
+          git fetch --depth 1 origin "$MPT_SHA" || true
           git checkout "$MPT_SHA"
           echo "MPT SHA: $(git rev-parse HEAD)"
 
       # -------------------------------------------------------
-      # 3. System dependencies (ffmpeg + imagemagick + Noto fonts)
+      # 5. System dependencies (with bounded timeout & non-interactive)
       # -------------------------------------------------------
       - name: Install system dependencies
+        timeout-minutes: 8
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-noto-core fonts-dejavu-core
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y || true
+          sudo apt-get install -y --no-install-recommends ffmpeg imagemagick fonts-noto-core fonts-dejavu-core || true
           ffmpeg -version | head -1
-          # Install Vietnamese-capable Unicode font (NotoSans-Bold.ttf) into MPT font dir
+          ffprobe -version | head -1
           mkdir -p mpt/resource/fonts
-          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" | head -n 1)
+          NOTO_FONT=$(find /usr/share/fonts -name "NotoSans-Bold.ttf" -o -name "NotoSans-Regular.ttf" -o -name "DejaVuSans-Bold.ttf" 2>/dev/null | head -n 1)
           if [ -n "$NOTO_FONT" ] && [ -f "$NOTO_FONT" ]; then
             cp "$NOTO_FONT" mpt/resource/fonts/NotoSans-Bold.ttf
             echo "Installed subtitle font from $NOTO_FONT to mpt/resource/fonts/NotoSans-Bold.ttf"
@@ -107,37 +340,11 @@ jobs:
           fi
 
       # -------------------------------------------------------
-      # 3.5 Validate required secrets
+      # 6. Install uv and MPT dependencies
       # -------------------------------------------------------
-      - name: Validate required secrets
-        shell: bash
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::Missing repository secret GEMINI_API_KEY. Please set it in Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-          if [ -z "$PEXELS_API_KEY" ]; then
-            echo "::error::Missing repository secret PEXELS_API_KEY."
-            exit 1
-          fi
-
-      # -------------------------------------------------------
-      # 4. Setup Python + uv
-      # -------------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Install uv
         run: pip install uv --quiet
 
-      # -------------------------------------------------------
-      # 5. Install MoneyPrinterTurbo dependencies
-      # -------------------------------------------------------
       - name: Install MPT dependencies
         working-directory: mpt
         run: |
@@ -147,8 +354,7 @@ jobs:
           echo "MPT deps installed"
 
       # -------------------------------------------------------
-      # 6. Generate config.toml (secrets scoped here only)
-      #    Topic is read from env — never interpolated into shell
+      # 7. Generate MPT config.toml
       # -------------------------------------------------------
       - name: Generate MPT config.toml
         working-directory: mpt
@@ -174,39 +380,185 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 7. Run MoneyPrinterTurbo CLI
-      #    Topic is passed via env var AVF_TOPIC, then read by
-      #    Python → passed as a list element to subprocess.
-      #    No shell interpolation of user input.
+      # 7.5 Validate and Stage Flow Clips (Zero Pexels Leakage & Fail-Closed)
+      # -------------------------------------------------------
+      - name: Stage Flow Clips
+        if: inputs.visual_provider == 'flow_clips'
+        working-directory: mpt
+        run: |
+          python - << 'PYEOF'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.flow_planner import validate_and_stage_flow_clips
+
+          flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
+          staged_dir = Path("storage/local_videos")
+
+          # Derive expected scene count and target clip duration directly from flow_scene_pack.json or plan_flow_scenes authority
+          pack_json = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output" / "flow_scene_pack.json"
+          if pack_json.exists():
+              import json
+              pack_data = json.loads(pack_json.read_text(encoding="utf-8"))
+              expected_scenes = pack_data.get("total_scenes", len(pack_data.get("scenes", [])))
+              clip_target_sec = pack_data.get("scenes", [{}])[0].get("target_seconds", 8 if str(os.environ.get("AVF_DURATION")) == "45" else 10)
+          else:
+              from auto_video_factory.flow_planner import plan_flow_scenes
+              topic    = os.environ.get("AVF_TOPIC", "")
+              duration = int(os.environ.get("AVF_DURATION", "45"))
+              mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
+              pack     = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
+              expected_scenes = pack.total_scenes
+              clip_target_sec = pack.scenes[0].target_seconds if pack.scenes else (8 if duration == 45 else 10)
+
+          min_usable_duration = float(os.environ.get("AVF_DURATION", "45")) * 0.70
+
+          staged_clips = validate_and_stage_flow_clips(
+              flow_input,
+              staged_dir,
+              expected_scene_count=expected_scenes,
+              min_total_duration=min_usable_duration,
+          )
+          print(f"Staged {len(staged_clips)} Flow clips into {staged_dir} (target clip duration: {clip_target_sec}s)")
+          for c in staged_clips:
+              print(f"  - {c.name} ({c.stat().st_size} bytes, fail-closed audio stripped)")
+
+          with open("staged_flow_materials.txt", "w", encoding="utf-8") as f:
+              f.write(",".join(str(c.resolve()) for c in staged_clips))
+
+          with open("staged_clip_duration.txt", "w", encoding="utf-8") as f:
+              f.write(str(clip_target_sec))
+          PYEOF
+
+      # -------------------------------------------------------
+      # 8. Render video with MoneyPrinterTurbo
       # -------------------------------------------------------
       - name: Render video with MoneyPrinterTurbo
         working-directory: mpt
         run: |
           python - << 'PYEOF'
-          import os, sys, subprocess, json
+          import os, sys, subprocess, json, glob
+          from pathlib import Path
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
-          from auto_video_factory.mpt_adapter import build_cli_args
+          from auto_video_factory.mpt_adapter import (
+              build_cli_args,
+              validate_script_duration_budget,
+              extract_script_from_task,
+              duration_to_word_budget,
+              duration_to_paragraphs,
+          )
 
           topic        = os.environ["AVF_TOPIC"]
           duration     = os.environ["AVF_DURATION"]
           voice        = os.environ["AVF_VOICE"]
-          video_source = os.environ["AVF_VIDEO_SOURCE"]
+          provider     = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
 
-          cli_args = build_cli_args(
+          # Check if flow local clips are present
+          flow_materials = ""
+          if os.path.exists("staged_flow_materials.txt"):
+              with open("staged_flow_materials.txt", "r", encoding="utf-8") as f:
+                  flow_materials = f.read().strip()
+
+          clip_duration = None
+          if os.path.exists("staged_clip_duration.txt"):
+              try:
+                  clip_duration = int(round(float(Path("staged_clip_duration.txt").read_text(encoding="utf-8").strip())))
+              except Exception:
+                  pass
+          if clip_duration is None:
+              clip_duration = 8 if str(duration) == "45" else 10
+
+          if provider == "flow_clips":
+              if not flow_materials:
+                  print("::error::No staged Flow clips found in storage/flow_videos/ for visual_provider=flow_clips. Please add clips to storage/flow_videos/ or use visual_provider=prepare_flow_pack to generate prompts.")
+                  sys.exit(1)
+              video_source = "local"
+              print(f"Using Flow Local Clips: {flow_materials} (Zero Pexels Leakage, clip_duration={clip_duration}s)")
+          else:
+              video_source = os.environ.get("AVF_VIDEO_SOURCE", "pexels")
+              print(f"Using Video Source: {video_source}")
+
+          # -----------------------------------------------------------------
+          # Script Duration Control & Lock (Stop-at Script + Bounded Retries)
+          # -----------------------------------------------------------------
+          target_words = duration_to_word_budget(duration)
+          paragraphs = duration_to_paragraphs(duration)
+          locked_script = ""
+          max_attempts = 3
+
+          for attempt in range(1, max_attempts + 1):
+              print(f"\n--- Script Generation Attempt {attempt}/{max_attempts} (Target: ~{target_words} words for {duration}s) ---")
+              if attempt == 1:
+                  script_prompt = (
+                      f"Hãy viết kịch bản dẫn chuyện tiếng Việt hoàn chỉnh, hấp dẫn, gồm đúng {paragraphs} đoạn văn chi tiết (tuyệt đối không bỏ dở câu). "
+                      f"Tổng độ dài khoảng {target_words} từ để thời lượng đọc vừa vặn {duration} giây."
+                  )
+              else:
+                  script_prompt = (
+                      f"LƯU Ý QUAN TRỌNG: Kịch bản lần trước quá ngắn hoặc không đạt thời lượng. "
+                      f"BẮT BUỘC viết đầy đủ, chi tiết đúng {paragraphs} đoạn văn hoàn chỉnh, tổng độ dài đạt đúng khoảng {target_words} từ cho {duration} giây (tuyệt đối không tóm tắt hay kết thúc sớm)."
+                  )
+
+              gen_args = build_cli_args(
+                  topic=topic,
+                  duration=duration,
+                  voice=voice,
+                  video_source=video_source,
+                  video_materials=flow_materials if video_source == "local" else "",
+                  video_clip_duration=clip_duration,
+                  video_script_prompt=script_prompt,
+                  stop_at="script",
+              )
+              gen_cmd = [sys.executable, "cli.py"] + gen_args
+              gen_res = subprocess.run(gen_cmd, capture_output=True, text=True)
+              if gen_res.stdout:
+                  print(gen_res.stdout)
+              if gen_res.stderr:
+                  print(gen_res.stderr, file=sys.stderr)
+              if gen_res.returncode != 0:
+                  print(f"::warning::Script generation attempt {attempt} returned non-zero exit code: {gen_res.returncode}")
+                  continue
+
+              try:
+                  candidate_script = extract_script_from_task(".", raw_output=gen_res.stdout)
+                  is_valid, wc, tw, msg = validate_script_duration_budget(candidate_script, duration)
+                  print(f"Candidate script length: {wc} words (Target: {tw} words) -> {msg}")
+                  if is_valid:
+                      locked_script = candidate_script
+                      print(f"Script duration contract PASS on attempt {attempt}: Locked {wc} words.")
+                      break
+                  else:
+                      print(f"::warning::Script budget validation rejected: {msg}")
+              except Exception as e:
+                  print(f"::warning::Could not extract script on attempt {attempt}: {e}")
+
+          if not locked_script:
+              print(f"::error::FINAL_STATUS=SCRIPT_DURATION_CONTRACT_FAILED: Failed to produce compliant script after {max_attempts} attempts.")
+              sys.exit(1)
+
+          with open("locked_video_script.txt", "w", encoding="utf-8") as f:
+              f.write(locked_script)
+
+          # -----------------------------------------------------------------
+          # Full Video Render with Locked Script & Authoritative Clip Duration
+          # -----------------------------------------------------------------
+          render_args = build_cli_args(
               topic=topic,
               duration=duration,
               voice=voice,
               video_source=video_source,
+              video_materials=flow_materials if video_source == "local" else "",
+              video_clip_duration=clip_duration,
+              video_script=locked_script,
           )
-          cmd = [sys.executable, "cli.py"] + cli_args
-          print("Running MPT CLI (topic redacted from log):", cmd[:3], "... [args]")
-
-          result = subprocess.run(cmd, capture_output=False, text=True)
-          sys.exit(result.returncode)
+          render_cmd = [sys.executable, "cli.py"] + render_args
+          print(f"Running Full MPT Render with locked script ({len(locked_script.split())} words) and clip_duration={clip_duration}s...")
+          render_res = subprocess.run(render_cmd, capture_output=False, text=True)
+          sys.exit(render_res.returncode)
           PYEOF
 
       # -------------------------------------------------------
-      # 8. Locate output video and write metadata
+      # 9. Locate output video and write metadata
       # -------------------------------------------------------
       - name: Locate output and write metadata
         working-directory: mpt
@@ -218,7 +570,6 @@ jobs:
 
           mpt_root = os.getcwd()
 
-          # Find most recently modified task dir
           task_dirs = glob.glob(os.path.join(mpt_root, "storage", "tasks", "*"))
           if not task_dirs:
               sys.exit("ERROR: No task directories found in storage/tasks/")
@@ -229,21 +580,20 @@ jobs:
           video_path = locate_output_video(mpt_root, task_id)
           print(f"Video: {video_path} ({os.path.getsize(video_path)} bytes)")
 
-          # Stage output
           out_dir = os.path.join(mpt_root, "avf_output")
           os.makedirs(out_dir, exist_ok=True)
           shutil.copy2(video_path, os.path.join(out_dir, "video.mp4"))
 
-          # Copy SRT if present
           srt_candidates = glob.glob(os.path.join(task_dirs[0], "**", "*.srt"), recursive=True)
           if srt_candidates:
               shutil.copy2(srt_candidates[0], os.path.join(out_dir, "captions.srt"))
 
-          # Write sanitized metadata
           meta = sanitize_result_metadata({
               "status": "ok",
               "task_id": task_id,
               "mpt_sha": os.environ.get("MPT_SHA", ""),
+              "visual_provider": os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips"),
+              "flow_mode": os.environ.get("AVF_FLOW_MODE", "flow_balanced"),
               "topic_length": len(os.environ.get("AVF_TOPIC", "")),
               "duration_input": os.environ.get("AVF_DURATION"),
               "voice": os.environ.get("AVF_VOICE"),
@@ -257,36 +607,36 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
-      # 9. Verify output video duration before upload
+      # 10. Verify output video duration before upload
       # -------------------------------------------------------
       - name: Verify output video
         run: |
           test -s mpt/avf_output/video.mp4 || { echo "VERIFY FAIL: empty video"; exit 1; }
-          
+
           EXPECTED=${AVF_DURATION}
           ACTUAL=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 mpt/avf_output/video.mp4 || true)
           ACTUAL_INT=${ACTUAL%.*}
-          
-          if ! [[ "$ACTUAL_INT" =~ ^[0-9]+$ ]]; then 
+
+          if ! [[ "$ACTUAL_INT" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid duration from ffprobe: $ACTUAL"
             exit 1
           fi
-          
+
           echo "Expected duration: $EXPECTED seconds"
           echo "Actual duration: $ACTUAL_INT seconds"
-          
+
           DIFF=$(( ACTUAL_INT - EXPECTED ))
           DIFF=${DIFF#-}
-          
+
           if [ "$DIFF" -gt 5 ] && [ "$DIFF" -gt $(( EXPECTED / 10 )) ]; then
             echo "::error::VERIFY FAIL: Video duration outside tolerance. Expected $EXPECTED, got $ACTUAL_INT"
             exit 1
           fi
-          
+
           echo "VERIFY PASS"
 
       # -------------------------------------------------------
-      # 10. Upload artifact (1 day retention)
+      # 11. Upload video artifact (1 day retention)
       # -------------------------------------------------------
       - name: Upload video artifact
         uses: actions/upload-artifact@v4
@@ -298,3 +648,4 @@ jobs:
             mpt/avf_output/result.json
           if-no-files-found: error
           retention-days: 1
+
