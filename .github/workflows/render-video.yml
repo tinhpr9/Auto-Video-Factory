@@ -510,13 +510,17 @@ jobs:
                   stop_at="script",
               )
               gen_cmd = [sys.executable, "cli.py"] + gen_args
-              gen_res = subprocess.run(gen_cmd, capture_output=False, text=True)
+              gen_res = subprocess.run(gen_cmd, capture_output=True, text=True)
+              if gen_res.stdout:
+                  print(gen_res.stdout)
+              if gen_res.stderr:
+                  print(gen_res.stderr, file=sys.stderr)
               if gen_res.returncode != 0:
                   print(f"::warning::Script generation attempt {attempt} returned non-zero exit code: {gen_res.returncode}")
                   continue
 
               try:
-                  candidate_script = extract_script_from_task(".")
+                  candidate_script = extract_script_from_task(".", raw_output=gen_res.stdout)
                   is_valid, wc, tw, msg = validate_script_duration_budget(candidate_script, duration)
                   print(f"Candidate script length: {wc} words (Target: {tw} words) -> {msg}")
                   if is_valid:

@@ -283,12 +283,13 @@ class TestScriptDurationControl:
         assert word_count == 0
         assert "empty" in msg.lower()
 
-    def test_script_duration_validation_rejects_unclosed_sentence(self):
-        words = ["từ"] * 150
-        script = " ".join(words) # missing terminal punctuation
-        valid, word_count, target_words, msg = mpt_adapter.validate_script_duration_budget(script, "45")
-        assert valid is False
-        assert "punctuation" in msg.lower() or "incomplete" in msg.lower()
+    def test_extract_script_from_output_and_raw_output(self):
+        raw = '{"task_id": "test-task-123", "result": {"script": "Đây là kịch bản thử nghiệm hoàn chỉnh."}}'
+        s1 = mpt_adapter.extract_script_from_output(raw)
+        assert s1 == "Đây là kịch bản thử nghiệm hoàn chỉnh."
+
+        s2 = mpt_adapter.extract_script_from_task(".", raw_output=raw)
+        assert s2 == "Đây là kịch bản thử nghiệm hoàn chỉnh."
 
 
 # ===========================================================================

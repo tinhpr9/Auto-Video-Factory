@@ -177,11 +177,49 @@ def validate_script_duration_budget(
     return True, word_count, target_words, "OK"
 
 
-def extract_script_from_task(mpt_root: str, task_id: str | None = None) -> str:
+def extract_script_from_output(raw_output: str) -> str:
     """
-    Extract generated script from an MPT task directory.
+    Extract script string from CLI JSON stdout (e.g. {"task_id": "...", "result": {"script": "..."}}).
     """
+    if not raw_output:
+        return ""
+    for line in raw_output.splitlines():
+        line = line.strip()
+        if "result" in line and ("script" in line or "video_script" in line):
+            try:
+                # Find outermost JSON object
+                start = line.find("{")
+                end = line.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    data = json.loads(line[start : end + 1])
+                    if isinstance(data, dict):
+                        res = data.get("result", {})
+                        if isinstance(res, dict):
+                            s = res.get("script") or res.get("video_script") or res.get("content")
+                            if s and isinstance(s, str):
+                                return s.strip()
+            except Exception:
+                continue
+    return ""
+
+
+def extract_script_from_task(
+    mpt_root: str = ".",
+    task_id: str | None = None,
+    raw_output: str = "",
+) -> str:
+    """
+    Extract generated script from CLI output or an MPT task directory.
+    """
+    if raw_output:
+        extracted = extract_script_from_output(raw_output)
+        if extracted:
+            return extracted
+
     storage_tasks = Path(mpt_root) / "storage" / "tasks"
+    if not storage_tasks.exists():
+        raise FileNotFoundError(f"Storage tasks directory not found: {storage_tasks}")
+
     if task_id:
         task_dir = storage_tasks / task_id
     else:
