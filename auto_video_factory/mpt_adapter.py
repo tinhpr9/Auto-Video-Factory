@@ -342,10 +342,11 @@ def build_cli_args(
 
 def build_config_toml(
     *,
-    pexels_api_key: str,
-    llm_provider: str,
-    llm_api_key: str,
+    pexels_api_key: str = "",
+    llm_provider: str = "gemini",
+    llm_api_key: str = "",
     pixabay_api_key: str = "",
+    font_name: str = "NotoSans-Bold.ttf",
 ) -> str:
     """
     Generate a minimal config.toml for MoneyPrinterTurbo.
@@ -355,10 +356,11 @@ def build_config_toml(
     appear in process listing or logs.
 
     Args:
-        pexels_api_key:  Pexels API key (from GitHub Secret PEXELS_API_KEY).
-        llm_provider:    LLM provider name, e.g. "openai".
-        llm_api_key:     LLM API key (from GitHub Secret LLM_API_KEY).
+        pexels_api_key:  Optional Pexels API key.
+        llm_provider:    LLM provider name, e.g. "gemini" or "openai".
+        llm_api_key:     Optional LLM API key.
         pixabay_api_key: Optional Pixabay key.
+        font_name:       Subtitle font name.
 
     Returns:
         TOML string ready to write as ``config.toml`` inside the MPT directory.
@@ -386,6 +388,7 @@ video_source = "pexels"
 pexels_api_keys = {pexels_list}
 pixabay_api_keys = {pixabay_list}
 match_materials_to_script = true
+font_name = {json.dumps(font_name)}
 
 {llm_section}
 
@@ -405,6 +408,7 @@ compute_type = "int8"
 [ui]
 hide_log = false
 open_task_folder_on_completion = false
+font_name = {json.dumps(font_name)}
 """
 
 
