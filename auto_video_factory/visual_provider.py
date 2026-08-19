@@ -334,9 +334,11 @@ class GeminiVideoProvider(VisualProvider):
 
                 import base64
                 raw_tmp = output_path.with_suffix(".tmp.mp4")
-                raw_tmp.write_bytes(base64.b64decode(video_bytes))
-                self.strip_audio(raw_tmp, output_path)
-                raw_tmp.unlink(missing_ok=True)
+                try:
+                    raw_tmp.write_bytes(base64.b64decode(video_bytes))
+                    self.strip_audio(raw_tmp, output_path)
+                finally:
+                    raw_tmp.unlink(missing_ok=True)
 
                 if not self.validate_scene_clip(output_path):
                     if output_path.exists():
