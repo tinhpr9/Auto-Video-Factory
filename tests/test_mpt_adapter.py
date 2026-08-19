@@ -369,6 +369,16 @@ class TestBuildConfigToml:
         )
         assert "tls_verify = true" in result
 
+    def test_default_invocation_without_args(self):
+        result = mpt_adapter.build_config_toml()
+        assert isinstance(result, str)
+        assert 'llm_provider = "gemini"' in result
+        assert 'font_name = "NotoSans-Bold.ttf"' in result
+
+    def test_custom_font_name(self):
+        result = mpt_adapter.build_config_toml(font_name="DejaVuSans-Bold.ttf")
+        assert 'font_name = "DejaVuSans-Bold.ttf"' in result
+
 
 # ===========================================================================
 # 6. locate_output_video
