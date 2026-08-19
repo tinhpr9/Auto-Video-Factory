@@ -30,12 +30,14 @@ class FlowFailureClass(str, Enum):
 class FlowJobStatus(str, Enum):
     """Lifecycle status of a Flow generation job."""
     QUEUED = "QUEUED"
+    RETRY_WAIT = "RETRY_WAIT"
     SUBMITTED = "SUBMITTED"
     PENDING = "PENDING"
     GENERATING = "GENERATING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     USER_INTERACTION_REQUIRED = "USER_INTERACTION_REQUIRED"
+    SUBMISSION_AMBIGUOUS = "SUBMISSION_AMBIGUOUS"
     CANCELLED = "CANCELLED"
 
 
@@ -93,6 +95,7 @@ class FlowGenerationRequest:
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     start_image_path: Optional[Path] = None
     priority: int = 5  # Higher number = higher priority
+    client_request_id: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     prompt_hash: str = field(init=False)
 
@@ -100,14 +103,21 @@ class FlowGenerationRequest:
         self.output_dir = Path(self.output_dir)
         if self.start_image_path:
             self.start_image_path = Path(self.start_image_path)
-        # Compute deterministic prompt hash
+        if not self.client_request_id:
+            self.client_request_id = self.job_id
+
+        # Compute deterministic prompt hash including all generation-affecting fields
         normalized_prompt = self.prompt.strip()
         hasher = hashlib.sha256()
         hasher.update(normalized_prompt.encode("utf-8"))
+        hasher.update(b"\x00")
         hasher.update(self.model.value.encode("utf-8"))
+        hasher.update(b"\x00")
         hasher.update(self.aspect_ratio.value.encode("utf-8"))
-        if self.start_image_path:
-            hasher.update(str(self.start_image_path).encode("utf-8"))
+        hasher.update(b"\x00")
+        hasher.update(str(self.count).encode("utf-8"))
+        hasher.update(b"\x00")
+        hasher.update(str(self.start_image_path or "").encode("utf-8"))
         self.prompt_hash = hasher.hexdigest()
 
 
@@ -136,6 +146,9 @@ class FlowJobRecord:
     model: str
     aspect_ratio: str
     priority: int
+    count: int = 1
+    start_image_path: Optional[Path] = None
+    client_request_id: Optional[str] = None
     provider_job_id: Optional[str] = None
     status: FlowJobStatus = FlowJobStatus.QUEUED
     attempt_count: int = 0
@@ -156,6 +169,9 @@ class FlowJobRecord:
             model=req.model.value,
             aspect_ratio=req.aspect_ratio.value,
             priority=req.priority,
+            count=req.count,
+            start_image_path=req.start_image_path,
+            client_request_id=req.client_request_id or req.job_id,
             created_at=req.created_at,
             updated_at=time.time(),
         )
@@ -169,6 +185,9 @@ class FlowJobRecord:
             "model": self.model,
             "aspect_ratio": self.aspect_ratio,
             "priority": self.priority,
+            "count": self.count,
+            "start_image_path": str(self.start_image_path) if self.start_image_path else None,
+            "client_request_id": self.client_request_id,
             "provider_job_id": self.provider_job_id,
             "status": self.status.value,
             "attempt_count": self.attempt_count,
@@ -190,6 +209,9 @@ class FlowJobRecord:
             model=data["model"],
             aspect_ratio=data["aspect_ratio"],
             priority=data.get("priority", 5),
+            count=data.get("count", 1),
+            start_image_path=Path(data["start_image_path"]) if data.get("start_image_path") else None,
+            client_request_id=data.get("client_request_id"),
             provider_job_id=data.get("provider_job_id"),
             status=FlowJobStatus(data.get("status", "QUEUED")),
             attempt_count=data.get("attempt_count", 0),

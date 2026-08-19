@@ -105,17 +105,19 @@ def test_crash_recovery_restores_queued_and_interrupted_jobs():
             output_dir=tmp_path / "videos",
         )
 
-        # resume_pending_jobs must re-enqueue unfulfilled QUEUED / interrupted GENERATING jobs into queue
+        # resume_pending_jobs must re-enqueue unfulfilled QUEUED jobs into queue,
+        # and transition un-reconciled GENERATING jobs to SUBMISSION_AMBIGUOUS (fail-closed against double billing)
         resumed = controller2.resume_pending_jobs()
-        assert controller2.queue.size() == 2
+        assert controller2.queue.size() == 1
 
-        # Process next should now execute both jobs successfully
+        # Process next should now execute the QUEUED job successfully
         res1 = controller2.process_next()
-        res2 = controller2.process_next()
-
         assert res1.status == FlowJobStatus.COMPLETED
-        assert res2.status == FlowJobStatus.COMPLETED
         assert controller2.queue.is_empty() is True
+
+        # Check that ambiguous interrupted job was marked SUBMISSION_AMBIGUOUS
+        gen_rec = controller2.get_job_status("job_gen")
+        assert gen_rec.status == FlowJobStatus.SUBMISSION_AMBIGUOUS
 
 
 class AsyncMultiPollProvider(FlowProvider):

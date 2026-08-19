@@ -54,3 +54,10 @@ class FlowProvider(ABC):
     def download(self, provider_job_id: str, output_dir: Path) -> list[Path]:
         """Download rendered media files for a completed video job."""
         pass
+
+    def reconcile_by_client_id(self, client_request_id: str) -> Optional[FlowJobResult]:
+        """
+        Attempt to look up an in-flight or completed provider job by client request ID.
+        Default implementation returns None if upstream does not support reconciliation.
+        """
+        return None

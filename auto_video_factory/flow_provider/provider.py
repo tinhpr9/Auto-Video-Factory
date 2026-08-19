@@ -101,134 +101,157 @@ class MockFlowProvider(FlowProvider):
         if self.simulate_latency_s > 0:
             time.sleep(self.simulate_latency_s)
 
-        cost = self.MODEL_COSTS.get(request.model, 20)
-        credit_before = self.credits
-
-        # Simulated failure injection
+        # Injected failure simulation
         if self.simulate_failure:
-            return FlowJobResult(
-                job_id=request.job_id,
-                provider_job_id="",
-                status=FlowJobStatus.USER_INTERACTION_REQUIRED
-                if self.simulate_failure == FlowFailureClass.USER_INTERACTION_REQUIRED
-                else FlowJobStatus.FAILED,
-                credit_before=credit_before,
-                credit_after=credit_before,
-                failure_class=self.simulate_failure,
-                failure_message=f"Simulated {self.simulate_failure.value} failure",
-                runtime_evidence={"simulated": True},
-            )
-
-        # Credit threshold guard
-        if self.credits < cost:
+            if self.simulate_failure == FlowFailureClass.USER_INTERACTION_REQUIRED:
+                return FlowJobResult(
+                    job_id=request.job_id,
+                    provider_job_id="",
+                    status=FlowJobStatus.USER_INTERACTION_REQUIRED,
+                    failure_class=FlowFailureClass.USER_INTERACTION_REQUIRED,
+                    failure_message="Simulated CAPTCHA challenge requires manual interaction.",
+                )
             return FlowJobResult(
                 job_id=request.job_id,
                 provider_job_id="",
                 status=FlowJobStatus.FAILED,
-                credit_before=credit_before,
-                credit_after=credit_before,
-                failure_class=FlowFailureClass.QUOTA,
-                failure_message=f"Insufficient credits: required {cost}, available {self.credits}",
-                runtime_evidence={"required_credits": cost, "available_credits": self.credits},
+                failure_class=self.simulate_failure,
+                failure_message=f"Simulated failure: {self.simulate_failure.value}",
             )
 
-        # Deduct credits
-        self.credits -= cost
-        self.consumed_credits += cost
-        credit_after = self.credits
+        unit_cost = self.MODEL_COSTS.get(request.model, 20)
+        total_cost = unit_cost * max(1, request.count)
 
-        provider_job_id = f"mock_flow_{uuid.uuid4().hex[:12]}"
+        if self.credits < total_cost:
+            return FlowJobResult(
+                job_id=request.job_id,
+                provider_job_id="",
+                status=FlowJobStatus.FAILED,
+                failure_class=FlowFailureClass.QUOTA,
+                failure_message=f"Insufficient credits: requires {total_cost}, available {self.credits}",
+            )
+
+        credits_before = self.credits
+        self.credits -= total_cost
+        self.consumed_credits += total_cost
+        credits_after = self.credits
+
+        provider_job_id = f"mock_prov_{uuid.uuid4().hex[:8]}"
+
         self._SHARED_JOBS[provider_job_id] = {
             "job_id": request.job_id,
-            "request": request,
-            "credit_before": credit_before,
-            "credit_after": credit_after,
-            "created_at": time.time(),
+            "client_request_id": request.client_request_id or request.job_id,
+            "prompt": request.prompt,
+            "model": request.model.value,
+            "aspect_ratio": request.aspect_ratio.value,
+            "count": request.count,
             "status": FlowJobStatus.COMPLETED,
+            "created_at": time.time(),
         }
 
         return FlowJobResult(
             job_id=request.job_id,
             provider_job_id=provider_job_id,
             status=FlowJobStatus.SUBMITTED,
-            credit_before=credit_before,
-            credit_after=credit_after,
-            runtime_evidence={"provider": "mock", "cost": cost},
+            credit_before=credits_before,
+            credit_after=credits_after,
+            runtime_evidence={"cost_deducted": total_cost, "count": request.count},
         )
 
     def poll(self, provider_job_id: str) -> FlowJobResult:
-        job_data = self._SHARED_JOBS.get(provider_job_id)
-        if not job_data:
+        if self.simulate_latency_s > 0:
+            time.sleep(self.simulate_latency_s)
+
+        job = self._SHARED_JOBS.get(provider_job_id)
+        if not job:
             return FlowJobResult(
                 job_id="",
                 provider_job_id=provider_job_id,
                 status=FlowJobStatus.FAILED,
                 failure_class=FlowFailureClass.UNKNOWN,
-                failure_message=f"Unknown provider job id: {provider_job_id}",
+                failure_message=f"Unknown provider job ID: {provider_job_id}",
             )
 
         return FlowJobResult(
-            job_id=job_data["job_id"],
+            job_id=job["job_id"],
             provider_job_id=provider_job_id,
-            status=job_data["status"],
-            credit_before=job_data["credit_before"],
-            credit_after=job_data["credit_after"],
-            runtime_evidence={"provider": "mock", "polled": True},
+            status=job["status"],
+            runtime_evidence={"model": job["model"], "aspect_ratio": job["aspect_ratio"]},
         )
 
     def download(self, provider_job_id: str, output_dir: Path) -> list[Path]:
-        job_data = self._SHARED_JOBS.get(provider_job_id)
-        if not job_data:
-            raise RuntimeError(f"Unknown provider job id: {provider_job_id}")
-
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        out_file = output_dir / f"{job_data['job_id']}.mp4"
+        job = self._SHARED_JOBS.get(provider_job_id)
 
-        # Generate a minimal placeholder/dummy valid binary file for mock testing
-        if not out_file.exists():
+        count = job.get("count", 1) if job else 1
+        paths = []
+        for i in range(count):
+            suffix = f"_{i}" if count > 1 else ""
+            out_file = output_dir / f"{provider_job_id}{suffix}.mp4"
+            # Write synthetic MP4 header
             out_file.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+            paths.append(out_file)
+        return paths
 
-        return [out_file]
+    def reconcile_by_client_id(self, client_request_id: str) -> Optional[FlowJobResult]:
+        for p_id, job in self._SHARED_JOBS.items():
+            if job.get("client_request_id") == client_request_id or job.get("job_id") == client_request_id:
+                return FlowJobResult(
+                    job_id=job["job_id"],
+                    provider_job_id=p_id,
+                    status=job["status"],
+                )
+        return None
 
 
 class ProductionFlowProvider(FlowProvider):
     """
-    Production Flow provider with strict safety gates:
+    Evidence-gated production provider interface for Google Flow.
+    Fail-closed:
     - Zero CAPTCHA bypass behavior. If challenge detected, halts with USER_INTERACTION_REQUIRED.
-    - Zero undocumented RPC fallbacks.
-    - Credit threshold checks.
+    - Zero undocumented RPC fallbacks (EXPERIMENTAL_RPC_PROVIDER = False).
     """
 
     def __init__(
         self,
-        project_id: Optional[str] = None,
-        profile_dir: Optional[Path] = None,
-        cdp_url: Optional[str] = None,
+        auth_token: Optional[str] = None,
+        profile_path: Optional[Path] = None,
+        cdp_endpoint: Optional[str] = None,
     ):
-        self.project_id = project_id
-        self.profile_dir = profile_dir
-        self.cdp_url = cdp_url
-        self.last_credits_before: int = 0
-        self.last_credits_after: int = 0
+        self.auth_token = auth_token
+        self.profile_path = Path(profile_path) if profile_path else None
+        self.cdp_endpoint = cdp_endpoint
 
     def health(self) -> FlowHealthStatus:
-        # Verify browser profile or CDP port availability
-        profile_ok = self.profile_dir.exists() if self.profile_dir else False
+        has_auth = bool(self.auth_token)
+        has_profile = bool(self.profile_path and self.profile_path.exists())
+        has_browser = bool(self.cdp_endpoint) or has_profile
+
+        is_healthy = has_auth and has_browser
+
+        details = {
+            "provider_type": "production",
+            "captcha_bypass_disabled": True,
+            "experimental_rpc_disabled": not EXPERIMENTAL_RPC_PROVIDER,
+        }
+        if not is_healthy:
+            reasons = []
+            if not has_auth:
+                reasons.append("missing_auth_token")
+            if not has_browser:
+                reasons.append("browser_not_connected_or_profile_missing")
+            details["reason"] = "; ".join(reasons)
+
         return FlowHealthStatus(
-            healthy=True,
-            authenticated=bool(self.project_id or profile_ok or self.cdp_url),
-            profile_exists=profile_ok,
-            browser_ready=True,
-            details={
-                "project_id": self.project_id,
-                "captcha_bypass_disabled": True,
-                "experimental_rpc_provider": EXPERIMENTAL_RPC_PROVIDER,
-            },
+            healthy=is_healthy,
+            authenticated=has_auth,
+            profile_exists=has_profile,
+            browser_ready=has_browser,
+            details=details,
         )
 
     def get_credits(self) -> FlowCredits:
-        # In live provider, delegates to FlowAPI REST call /v1/credits
         return FlowCredits(
             total_credits=100,
             available_credits=100,
@@ -249,7 +272,6 @@ class ProductionFlowProvider(FlowProvider):
 
     def generate_video(self, request: FlowGenerationRequest) -> FlowJobResult:
         # Enforce fail-closed safety gate: CAPTCHA / bot challenge requires user interaction
-        # Never attempt bypass.
         return FlowJobResult(
             job_id=request.job_id,
             provider_job_id="",
