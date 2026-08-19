@@ -58,7 +58,8 @@ class ProductInput:
     def is_claim_prohibited(self, claim: str) -> bool:
         c_clean = claim.strip().lower()
         for p in self.prohibited_or_unverified_claims:
-            if p.strip().lower() in c_clean or c_clean in p.strip().lower():
+            p_clean = p.strip().lower()
+            if p_clean and (p_clean in c_clean or c_clean == p_clean):
                 return True
         return False
 

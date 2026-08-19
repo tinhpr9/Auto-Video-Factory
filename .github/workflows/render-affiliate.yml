@@ -72,17 +72,20 @@ jobs:
 
       - name: Plan 3 Affiliate Variants
         id: plan
+        env:
+          INPUT_PRODUCT_JSON: ${{ inputs.product_json }}
+          INPUT_DURATION: ${{ inputs.duration_seconds }}
         run: |
           mkdir -p affiliate_staging
-          # Check if input is a file or inline JSON
-          if [ -f "${{ inputs.product_json }}" ]; then
-            cp "${{ inputs.product_json }}" affiliate_staging/product.json
+          # Check if input is a file path or raw JSON
+          if [ -f "$INPUT_PRODUCT_JSON" ]; then
+            cp "$INPUT_PRODUCT_JSON" affiliate_staging/product.json
           else
-            echo '${{ inputs.product_json }}' > affiliate_staging/product.json
+            printf '%s' "$INPUT_PRODUCT_JSON" > affiliate_staging/product.json
           fi
           python -m auto_video_factory.affiliate plan \
             --product affiliate_staging/product.json \
-            --duration ${{ inputs.duration_seconds }} \
+            --duration "$INPUT_DURATION" \
             --output-dir affiliate_staging
 
       - name: Clone MoneyPrinterTurbo (Pinned SHA)
@@ -97,6 +100,8 @@ jobs:
           fi
 
       - name: Stage Media & Render 3 Affiliate Variants
+        env:
+          INPUT_DURATION: ${{ inputs.duration_seconds }}
         run: |
           mkdir -p affiliate-output
           # Copy metadata pack to output
@@ -104,6 +109,7 @@ jobs:
 
           python - << 'PYEOF'
           import json
+          import os
           import subprocess
           from pathlib import Path
           from auto_video_factory.affiliate import (
@@ -114,7 +120,8 @@ jobs:
 
           prod_data = json.loads(Path("affiliate_staging/product.json").read_text(encoding="utf-8"))
           product = validate_product_input(prod_data)
-          pack = plan_affiliate_pack(product, duration_seconds=int("${{ inputs.duration_seconds }}"))
+          target_duration = int(os.environ.get("INPUT_DURATION", "20"))
+          pack = plan_affiliate_pack(product, duration_seconds=target_duration)
           stager = AffiliateMediaStager()
 
           for variant in pack.variants:

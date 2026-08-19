@@ -123,25 +123,23 @@ class AffiliateMediaStager:
             target_dur = scenes[idx - 1].duration_seconds if (idx - 1) < len(scenes) else 5.0
 
             if media_pool:
-                # Cycle through real product videos
+                # Cycle through real product videos and normalize to 9:16 vertical video
                 source_video = media_pool[(idx - 1) % len(media_pool)]
-                # Ensure audio stripped & copy or convert
+                vf_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black"
                 cmd = [
                     "ffmpeg", "-y",
                     "-i", str(source_video),
                     "-t", str(target_dur),
-                    "-c:v", "copy",
+                    "-vf", vf_filter,
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
                     "-an",
                     str(out_clip),
                 ]
                 res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode != 0 or not out_clip.exists() or out_clip.stat().st_size == 0:
-                    # If stream copy failed, re-encode to vertical
-                    vf_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black"
-                    subprocess.run([
-                        "ffmpeg", "-y", "-i", str(source_video), "-t", str(target_dur),
-                        "-vf", vf_filter, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(out_clip)
-                    ], capture_output=True, text=True)
+                    err = res.stderr.strip() if res.stderr else f"Exit code {res.returncode}"
+                    raise RuntimeError(f"Failed to process product video {source_video}: {err}")
             elif image_pool:
                 # Convert image to 9:16 vertical video
                 source_img = image_pool[(idx - 1) % len(image_pool)]

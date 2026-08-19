@@ -59,7 +59,11 @@ class TestMediaStaging:
         variant = pack.get_variant(AffiliateVariantType.PROBLEM_SOLUTION)
 
         out_dir = tmp_path / "staged"
-        mock_run.return_value = MagicMock(returncode=0)
+        def fake_run(cmd, *args, **kwargs):
+            out_file = Path(cmd[-1])
+            out_file.write_bytes(b"dummy_rendered_clip")
+            return MagicMock(returncode=0, stderr="")
+        mock_run.side_effect = fake_run
 
         # Mock clip duration probing
         with patch("auto_video_factory.affiliate.media.probe_clip_duration", return_value=5.0):
