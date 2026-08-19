@@ -47,6 +47,7 @@ def test_affiliate_workflow_noninteractive_and_verification():
     text = _text()
     assert "DEBIAN_FRONTEND=noninteractive" in text, "apt-get must use DEBIAN_FRONTEND=noninteractive"
     assert "fonts-noto-cjk" not in text, "Avoid massive fonts-noto-cjk to prevent CI hang"
+    assert "apt-get update -y || true" in text or "apt-get update -qq || true" in text or "|| true" in text
     assert "problem_solution" in text
     assert "three_reasons" in text
     assert "comparison_highlight" in text

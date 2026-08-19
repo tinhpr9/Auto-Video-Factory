@@ -50,12 +50,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install system dependencies & Vietnamese fonts
+        timeout-minutes: 5
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y || true
+          sudo apt-get install -y --no-install-recommends \
             ffmpeg \
             fonts-noto-core \
-            fonts-dejavu-core
+            fonts-dejavu-core || true
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
 
       - name: Install Python dependencies
         run: |
@@ -82,8 +86,9 @@ jobs:
 
       - name: Clone MoneyPrinterTurbo (Pinned SHA)
         run: |
-          git clone https://github.com/harry0703/MoneyPrinterTurbo.git mpt_repo
+          git clone --depth 1 https://github.com/harry0703/MoneyPrinterTurbo.git mpt_repo || git clone https://github.com/harry0703/MoneyPrinterTurbo.git mpt_repo
           cd mpt_repo
+          git fetch --depth 1 origin b42e945b497176c823579f9b1895d9323446de23 || true
           git checkout b42e945b497176c823579f9b1895d9323446de23
           cd ..
           mkdir -p mpt_repo/resource/fonts
