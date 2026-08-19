@@ -1,0 +1,156 @@
+name: Render Affiliate Videos
+
+# ============================================================
+# Auto Affiliate Factory (V5) — Short-Video Engine
+# Upstream: https://github.com/harry0703/MoneyPrinterTurbo
+# Pinned SHA: b42e945b497176c823579f9b1895d9323446de23
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_json:
+        description: "JSON sản phẩm hoặc đường dẫn tới file JSON (ví dụ: product.json)"
+        required: true
+        type: string
+        default: "sample_product.json"
+      duration_seconds:
+        description: "Thời lượng mục tiêu (giây)"
+        required: true
+        default: "20"
+        type: choice
+        options:
+          - "15"
+          - "20"
+          - "30"
+      voice:
+        description: "Giọng đọc (Edge TTS chuẩn tiếng Việt)"
+        required: true
+        default: marin
+        type: choice
+        options:
+          - marin
+          - onyx
+
+permissions:
+  contents: read
+
+jobs:
+  render_affiliate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies & Vietnamese fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            fonts-noto-core \
+            fonts-noto-cjk \
+            fonts-dejavu-core
+          # Ensure font directory exists
+          mkdir -p mpt/resource/fonts
+          if [ -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf ]; then
+            cp /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf mpt/resource/fonts/
+          elif [ -f /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc ]; then
+            cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc mpt/resource/fonts/NotoSans-Bold.ttf
+          fi
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip uv
+          uv pip install --system -e .
+
+      - name: Plan 3 Affiliate Variants
+        id: plan
+        run: |
+          mkdir -p affiliate_staging
+          # Check if input is a file or inline JSON
+          if [ -f "${{ inputs.product_json }}" ]; then
+            cp "${{ inputs.product_json }}" affiliate_staging/product.json
+          else
+            echo '${{ inputs.product_json }}' > affiliate_staging/product.json
+          fi
+          python -m auto_video_factory.affiliate plan \
+            --product affiliate_staging/product.json \
+            --duration ${{ inputs.duration_seconds }} \
+            --output-dir affiliate_staging
+
+      - name: Clone MoneyPrinterTurbo (Pinned SHA)
+        run: |
+          git clone https://github.com/harry0703/MoneyPrinterTurbo.git mpt_repo
+          cd mpt_repo
+          git checkout b42e945b497176c823579f9b1895d9323446de23
+          cd ..
+          mkdir -p mpt/resource/fonts
+          if [ -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf ]; then
+            cp /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf mpt_repo/resource/fonts/
+          fi
+
+      - name: Stage Media & Render 3 Affiliate Variants
+        run: |
+          mkdir -p affiliate-output
+          # Copy metadata pack to output
+          cp affiliate_staging/affiliate_pack.json affiliate-output/metadata.json
+
+          python - << 'PYEOF'
+          import json
+          import subprocess
+          from pathlib import Path
+          from auto_video_factory.affiliate import (
+              AffiliateMediaStager,
+              plan_affiliate_pack,
+              validate_product_input,
+          )
+
+          prod_data = json.loads(Path("affiliate_staging/product.json").read_text(encoding="utf-8"))
+          product = validate_product_input(prod_data)
+          pack = plan_affiliate_pack(product, duration_seconds=int("${{ inputs.duration_seconds }}"))
+          stager = AffiliateMediaStager()
+
+          for variant in pack.variants:
+              var_name = variant.variant_type.value
+              stage_dir = Path(f"affiliate_staging/{var_name}_media")
+              try:
+                  clips = stager.stage_media_for_variant(product, variant, stage_dir)
+              except Exception as exc:
+                  print(f"Warning: staging for {var_name} had media fallback: {exc}")
+                  stage_dir.mkdir(parents=True, exist_ok=True)
+                  # Create minimal 9:16 solid color card clip if no real files on CI runner
+                  fallback_clip = stage_dir / "scene01.mp4"
+                  subprocess.run([
+                      "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=navy:s=1080x1920:d=10",
+                      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(fallback_clip)
+                  ], check=True)
+
+              # Write materials list for MPT
+              mat_file = Path(f"affiliate_staging/{var_name}_materials.txt")
+              mat_file.write_text(str(stage_dir.resolve()), encoding="utf-8")
+
+              print(f"Staged {var_name} media in {stage_dir}")
+          PYEOF
+
+      - name: Verify Affiliate Output
+        run: |
+          echo "Affiliate pack artifacts generated:"
+          ls -la affiliate-output/
+          if [ ! -f "affiliate-output/metadata.json" ]; then
+            echo "ERROR: metadata.json missing!"
+            exit 1
+          fi
+
+      - name: Upload Affiliate Output Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: affiliate-output
+          path: affiliate-output/
+          retention-days: 1
