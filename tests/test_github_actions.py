@@ -352,3 +352,34 @@ def test_render_job_exact_single_release_download():
     )
 
 
+# ---------------------------------------------------------------------------
+# Duration Contract & Flow Clip Duration Tests
+# ---------------------------------------------------------------------------
+
+def test_render_job_controls_and_locks_script_duration():
+    """Render job must validate script duration budget, bounded retry, and pass --video-script."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+    assert "validate_script_duration_budget" in render_job
+    assert "locked_script" in render_job or "locked_video_script" in render_job
+    assert "--video-script" in render_job or "video_script=locked_script" in render_job
+    assert "SCRIPT_DURATION_CONTRACT_FAILED" in render_job
+
+
+def test_render_job_explicitly_passes_flow_clip_duration():
+    """Render job must derive and pass authoritative --video-clip-duration (8s for 45s, 10s for 60/90s)."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+    assert "staged_clip_duration.txt" in render_job
+    assert "clip_duration" in render_job
+    assert "video_clip_duration" in render_job
+
+
+def test_stage_flow_clips_validates_min_media_duration():
+    """Stage Flow Clips must enforce min_total_duration to prevent insufficient media."""
+    text = _text()
+    render_job = text.split("render:", 1)[1]
+    stage_chunk = render_job.split("Stage Flow Clips", 1)[1].split("Render video with MoneyPrinterTurbo", 1)[0]
+    assert "min_usable_duration" in stage_chunk or "min_total_duration" in stage_chunk
+
+

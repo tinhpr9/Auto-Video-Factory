@@ -689,14 +689,36 @@ def validate_clip(clip_path: Path) -> bool:
         return False
 
 
+def probe_clip_duration(clip_path: Path) -> float:
+    """Get the duration of a video clip in seconds using ffprobe."""
+    if not clip_path.exists() or clip_path.stat().st_size == 0:
+        return 0.0
+    ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
+    cmd = [
+        ffprobe_bin, "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "json",
+        str(clip_path),
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return 0.0
+        data = json.loads(res.stdout)
+        return float(data.get("format", {}).get("duration", 0.0))
+    except Exception:
+        return 0.0
+
+
 def validate_and_stage_flow_clips(
     input_dir: Path,
     staged_dir: Path,
     expected_scene_count: int = 6,
+    min_total_duration: float = 0.0,
 ) -> list[Path]:
     """
-    Validate exact scene filename set (scene01.mp4..scene0N.mp4), strip audio
-    fail-closed, and stage in staged_dir.
+    Validate exact scene filename set (scene01.mp4..scene0N.mp4), verify media duration,
+    strip audio fail-closed, and stage in staged_dir.
 
     Exact filename policy:
     - Only files named exactly scene01.mp4..scene{N:02d}.mp4 are accepted.
@@ -705,6 +727,7 @@ def validate_and_stage_flow_clips(
     - Duplicate scene numbers or extra files are REJECTED.
 
     Returns list of clean staged clip Paths.
+    Raises ValueError on invalid filenames, corrupt clips, or insufficient media duration.
     """
     if not input_dir.exists():
         raise ValueError(f"Missing required Flow scenes: Input directory '{input_dir}' does not exist.")
@@ -730,6 +753,7 @@ def validate_and_stage_flow_clips(
 
     staged_dir.mkdir(parents=True, exist_ok=True)
     staged_clips: list[Path] = []
+    total_usable_duration = 0.0
 
     for idx in range(1, expected_scene_count + 1):
         exact_name = f"scene{idx:02d}.mp4"
@@ -737,11 +761,20 @@ def validate_and_stage_flow_clips(
         if not validate_clip(raw_clip):
             raise ValueError(f"Corrupt or invalid video clip: {raw_clip}")
 
+        clip_dur = probe_clip_duration(raw_clip)
+        total_usable_duration += clip_dur
+
         out_path = staged_dir / exact_name
         strip_clip_audio(raw_clip, out_path)
         if not out_path.exists() or out_path.stat().st_size == 0:
             raise RuntimeError(f"Fail-closed: Staged clip {out_path} is empty or missing after audio stripping.")
         staged_clips.append(out_path)
+
+    if min_total_duration > 0.0 and total_usable_duration < min_total_duration:
+        raise ValueError(
+            f"INSUFFICIENT_FLOW_MEDIA_DURATION: Total Flow media duration {total_usable_duration:.1f}s "
+            f"is insufficient (requires at least {min_total_duration:.1f}s)."
+        )
 
     return staged_clips
 

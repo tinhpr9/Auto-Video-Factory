@@ -625,4 +625,71 @@ class TestFlowSessionAuthorityAndValidation:
             load_and_validate_flow_session(manifest_file, clips_dir=non_existent_clips)
 
 
+# ===========================================================================
+# 10. Flow Media Duration Validation (Fix C)
+# ===========================================================================
+
+class TestFlowMediaDurationValidation:
+    def test_validate_and_stage_flow_clips_rejects_insufficient_media_duration(self, tmp_path, monkeypatch):
+        """When total usable visual duration across clips is less than required minimum, raise INSUFFICIENT_FLOW_MEDIA_DURATION."""
+        in_dir = tmp_path / "in"
+        staged_dir = tmp_path / "staged"
+        in_dir.mkdir()
+
+        for i in range(1, 7):
+            (in_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+
+        # Mock validate_clip and probe_clip_duration to simulate short clips (2.0s each = 12s total < 45s target)
+        monkeypatch.setattr(
+            "auto_video_factory.flow_planner.validate_clip",
+            lambda p: True,
+        )
+        monkeypatch.setattr(
+            "auto_video_factory.flow_planner.probe_clip_duration",
+            lambda p: 2.0,
+        )
+        monkeypatch.setattr(
+            "auto_video_factory.flow_planner.strip_clip_audio",
+            lambda inp, out: out.write_bytes(b"stripped"),
+        )
+
+        with pytest.raises(ValueError, match="INSUFFICIENT_FLOW_MEDIA_DURATION"):
+            validate_and_stage_flow_clips(
+                in_dir,
+                staged_dir,
+                expected_scene_count=6,
+                min_total_duration=35.0, # 45s requires at least 35s media
+            )
+
+    def test_validate_and_stage_flow_clips_passes_sufficient_duration(self, tmp_path, monkeypatch):
+        """When total usable visual duration satisfies minimum (e.g. 6 x 8s = 48s >= 35s), validation passes."""
+        in_dir = tmp_path / "in"
+        staged_dir = tmp_path / "staged"
+        in_dir.mkdir()
+
+        for i in range(1, 7):
+            (in_dir / f"scene{i:02d}.mp4").write_bytes(b"dummy")
+
+        monkeypatch.setattr(
+            "auto_video_factory.flow_planner.validate_clip",
+            lambda p: True,
+        )
+        monkeypatch.setattr(
+            "auto_video_factory.flow_planner.probe_clip_duration",
+            lambda p: 8.0,
+        )
+        monkeypatch.setattr(
+            "auto_video_factory.flow_planner.strip_clip_audio",
+            lambda inp, out: out.write_bytes(b"stripped"),
+        )
+
+        staged = validate_and_stage_flow_clips(
+            in_dir,
+            staged_dir,
+            expected_scene_count=6,
+            min_total_duration=35.0,
+        )
+        assert len(staged) == 6
+
+
 

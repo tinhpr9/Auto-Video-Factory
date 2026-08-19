@@ -138,6 +138,84 @@ def map_voice(voice_name: str) -> str:
 DEFAULT_FONT_NAME: str = "NotoSans-Bold.ttf"
 
 
+def validate_script_duration_budget(
+    script: str,
+    duration: str,
+    tolerance_ratio: float = 0.25,
+) -> tuple[bool, int, int, str]:
+    """
+    Validate that a candidate Vietnamese script satisfies the duration word budget.
+
+    Args:
+        script: The candidate script string.
+        duration: Duration string ("45", "60", "90").
+        tolerance_ratio: Allowable relative deviation from target word count (default 0.25).
+
+    Returns:
+        tuple (is_valid, word_count, target_words, message)
+    """
+    cleaned = (script or "").strip()
+    target_words = duration_to_word_budget(duration)
+    if not cleaned:
+        return False, 0, target_words, "Script is empty."
+
+    words = [w for w in cleaned.split() if w]
+    word_count = len(words)
+
+    # Check terminal punctuation (complete sentence)
+    if not cleaned.endswith((".", "!", "?", "...", "”", '"', "’", "'")):
+        return False, word_count, target_words, "Script does not end with terminal punctuation (incomplete sentence)."
+
+    min_words = int(target_words * (1.0 - tolerance_ratio))
+    max_words = int(target_words * (1.0 + tolerance_ratio))
+
+    if word_count < min_words:
+        return False, word_count, target_words, f"Script is too short ({word_count} words < {min_words} words minimum for {duration}s)."
+    if word_count > max_words:
+        return False, word_count, target_words, f"Script is too long ({word_count} words > {max_words} words maximum for {duration}s)."
+
+    return True, word_count, target_words, "OK"
+
+
+def extract_script_from_task(mpt_root: str, task_id: str | None = None) -> str:
+    """
+    Extract generated script from an MPT task directory.
+    """
+    storage_tasks = Path(mpt_root) / "storage" / "tasks"
+    if task_id:
+        task_dir = storage_tasks / task_id
+    else:
+        dirs = [d for d in storage_tasks.iterdir() if d.is_dir()]
+        if not dirs:
+            raise FileNotFoundError(f"No task directory found in {storage_tasks}")
+        dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        task_dir = dirs[0]
+
+    for filename in ["script.json", "config.json", "task.json", "video.json"]:
+        candidate = task_dir / filename
+        if candidate.exists():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    script = data.get("video_script") or data.get("script") or data.get("content")
+                    if script and isinstance(script, str):
+                        return script.strip()
+            except Exception:
+                continue
+
+    for candidate in task_dir.glob("*.json"):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                script = data.get("video_script") or data.get("script") or data.get("content")
+                if script and isinstance(script, str):
+                    return script.strip()
+        except Exception:
+            continue
+
+    raise FileNotFoundError(f"No valid script found in task directory: {task_dir}")
+
+
 def build_cli_args(
     *,
     topic: str,
@@ -146,6 +224,10 @@ def build_cli_args(
     video_source: str = "pexels",
     font_name: str = DEFAULT_FONT_NAME,
     video_materials: str = "",
+    video_clip_duration: int | float | None = None,
+    video_script: str = "",
+    video_script_prompt: str = "",
+    stop_at: str = "",
 ) -> list[str]:
     """
     Build the list of CLI arguments for ``python cli.py``.
@@ -155,12 +237,16 @@ def build_cli_args(
     to ``subprocess.run(..., shell=False)``.
 
     Args:
-        topic:           Raw topic string from workflow_dispatch input.
-        duration:        Duration string ("45", "60", "90").
-        voice:           Voice name ("marin", "onyx").
-        video_source:    Material source ("pexels", "pixabay", "coverr", "local").
-        font_name:       Subtitle font filename in resource/fonts (default: NotoSans-Bold.ttf).
-        video_materials: Comma-separated list or directory of local video clips when video_source is 'local'.
+        topic:               Raw topic string from workflow_dispatch input.
+        duration:            Duration string ("45", "60", "90").
+        voice:               Voice name ("marin", "onyx").
+        video_source:        Material source ("pexels", "pixabay", "coverr", "local").
+        font_name:           Subtitle font filename in resource/fonts (default: NotoSans-Bold.ttf).
+        video_materials:     Comma-separated list or directory of local video clips when video_source is 'local'.
+        video_clip_duration: Duration of each video clip segment in seconds.
+        video_script:        Pre-locked complete Vietnamese video script.
+        video_script_prompt: Prompt for LLM script generation when video_script is not pre-locked.
+        stop_at:             Stop stage ("script", etc.)
 
     Returns:
         Argument list ready for ``subprocess.run([python, "cli.py", *args])``.
@@ -172,10 +258,11 @@ def build_cli_args(
     word_budget = duration_to_word_budget(duration)
     mpt_voice = map_voice(voice)
     
-    script_prompt = (
-        f"Hãy viết kịch bản dẫn chuyện tiếng Việt hoàn chỉnh, hấp dẫn, gồm đúng {paragraphs} đoạn văn chi tiết (tuyệt đối không bỏ dở câu). "
-        f"Tổng độ dài khoảng {word_budget} từ để thời lượng đọc vừa vặn {duration} giây."
-    )
+    if not video_script_prompt:
+        video_script_prompt = (
+            f"Hãy viết kịch bản dẫn chuyện tiếng Việt hoàn chỉnh, hấp dẫn, gồm đúng {paragraphs} đoạn văn chi tiết (tuyệt đối không bỏ dở câu). "
+            f"Tổng độ dài khoảng {word_budget} từ để thời lượng đọc vừa vặn {duration} giây."
+        )
 
     args = [
         "--video-subject", topic,            # verbatim — safe via subprocess list
@@ -189,8 +276,18 @@ def build_cli_args(
         "--video-language", "vi-VN",
         "--bgm-type", "random",
         "--match-materials-to-script",
-        "--video-script-prompt", script_prompt,
     ]
+
+    if video_script:
+        args.extend(["--video-script", video_script])
+    else:
+        args.extend(["--video-script-prompt", video_script_prompt])
+
+    if video_clip_duration is not None:
+        args.extend(["--video-clip-duration", str(video_clip_duration)])
+
+    if stop_at:
+        args.extend(["--stop-at", stop_at])
 
     if video_source == "local" and video_materials:
         args.extend(["--video-materials", video_materials])

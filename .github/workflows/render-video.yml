@@ -395,12 +395,13 @@ jobs:
           flow_input = Path(os.environ["GITHUB_WORKSPACE"]) / "avf" / "storage" / "flow_videos"
           staged_dir = Path("storage/local_videos")
 
-          # Derive expected scene count directly from flow_scene_pack.json or plan_flow_scenes authority
+          # Derive expected scene count and target clip duration directly from flow_scene_pack.json or plan_flow_scenes authority
           pack_json = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output" / "flow_scene_pack.json"
           if pack_json.exists():
               import json
               pack_data = json.loads(pack_json.read_text(encoding="utf-8"))
               expected_scenes = pack_data.get("total_scenes", len(pack_data.get("scenes", [])))
+              clip_target_sec = pack_data.get("scenes", [{}])[0].get("target_seconds", 8 if str(os.environ.get("AVF_DURATION")) == "45" else 10)
           else:
               from auto_video_factory.flow_planner import plan_flow_scenes
               topic    = os.environ.get("AVF_TOPIC", "")
@@ -408,18 +409,25 @@ jobs:
               mode     = os.environ.get("AVF_FLOW_MODE", "flow_balanced")
               pack     = plan_flow_scenes(topic, duration_seconds=duration, flow_mode=mode)
               expected_scenes = pack.total_scenes
+              clip_target_sec = pack.scenes[0].target_seconds if pack.scenes else (8 if duration == 45 else 10)
+
+          min_usable_duration = float(os.environ.get("AVF_DURATION", "45")) * 0.70
 
           staged_clips = validate_and_stage_flow_clips(
               flow_input,
               staged_dir,
               expected_scene_count=expected_scenes,
+              min_total_duration=min_usable_duration,
           )
-          print(f"Staged {len(staged_clips)} Flow clips into {staged_dir}")
+          print(f"Staged {len(staged_clips)} Flow clips into {staged_dir} (target clip duration: {clip_target_sec}s)")
           for c in staged_clips:
               print(f"  - {c.name} ({c.stat().st_size} bytes, fail-closed audio stripped)")
 
           with open("staged_flow_materials.txt", "w", encoding="utf-8") as f:
               f.write(",".join(str(c.resolve()) for c in staged_clips))
+
+          with open("staged_clip_duration.txt", "w", encoding="utf-8") as f:
+              f.write(str(clip_target_sec))
           PYEOF
 
       # -------------------------------------------------------
@@ -430,8 +438,15 @@ jobs:
         run: |
           python - << 'PYEOF'
           import os, sys, subprocess, json, glob
+          from pathlib import Path
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
-          from auto_video_factory.mpt_adapter import build_cli_args
+          from auto_video_factory.mpt_adapter import (
+              build_cli_args,
+              validate_script_duration_budget,
+              extract_script_from_task,
+              duration_to_word_budget,
+              duration_to_paragraphs,
+          )
 
           topic        = os.environ["AVF_TOPIC"]
           duration     = os.environ["AVF_DURATION"]
@@ -444,28 +459,98 @@ jobs:
               with open("staged_flow_materials.txt", "r", encoding="utf-8") as f:
                   flow_materials = f.read().strip()
 
+          clip_duration = None
+          if os.path.exists("staged_clip_duration.txt"):
+              try:
+                  clip_duration = float(Path("staged_clip_duration.txt").read_text(encoding="utf-8").strip())
+              except Exception:
+                  pass
+          if clip_duration is None:
+              clip_duration = 8 if str(duration) == "45" else 10
+
           if provider == "flow_clips":
               if not flow_materials:
                   print("::error::No staged Flow clips found in storage/flow_videos/ for visual_provider=flow_clips. Please add clips to storage/flow_videos/ or use visual_provider=prepare_flow_pack to generate prompts.")
                   sys.exit(1)
               video_source = "local"
-              print(f"Using Flow Local Clips: {flow_materials} (Zero Pexels Leakage)")
+              print(f"Using Flow Local Clips: {flow_materials} (Zero Pexels Leakage, clip_duration={clip_duration}s)")
           else:
               video_source = os.environ.get("AVF_VIDEO_SOURCE", "pexels")
               print(f"Using Video Source: {video_source}")
 
-          cli_args = build_cli_args(
+          # -----------------------------------------------------------------
+          # Script Duration Control & Lock (Stop-at Script + Bounded Retries)
+          # -----------------------------------------------------------------
+          target_words = duration_to_word_budget(duration)
+          paragraphs = duration_to_paragraphs(duration)
+          locked_script = ""
+          max_attempts = 3
+
+          for attempt in range(1, max_attempts + 1):
+              print(f"\n--- Script Generation Attempt {attempt}/{max_attempts} (Target: ~{target_words} words for {duration}s) ---")
+              if attempt == 1:
+                  script_prompt = (
+                      f"Hãy viết kịch bản dẫn chuyện tiếng Việt hoàn chỉnh, hấp dẫn, gồm đúng {paragraphs} đoạn văn chi tiết (tuyệt đối không bỏ dở câu). "
+                      f"Tổng độ dài khoảng {target_words} từ để thời lượng đọc vừa vặn {duration} giây."
+                  )
+              else:
+                  script_prompt = (
+                      f"LƯU Ý QUAN TRỌNG: Kịch bản lần trước quá ngắn hoặc không đạt thời lượng. "
+                      f"BẮT BUỘC viết đầy đủ, chi tiết đúng {paragraphs} đoạn văn hoàn chỉnh, tổng độ dài đạt đúng khoảng {target_words} từ cho {duration} giây (tuyệt đối không tóm tắt hay kết thúc sớm)."
+                  )
+
+              gen_args = build_cli_args(
+                  topic=topic,
+                  duration=duration,
+                  voice=voice,
+                  video_source=video_source,
+                  video_materials=flow_materials if video_source == "local" else "",
+                  video_clip_duration=clip_duration,
+                  video_script_prompt=script_prompt,
+                  stop_at="script",
+              )
+              gen_cmd = [sys.executable, "cli.py"] + gen_args
+              gen_res = subprocess.run(gen_cmd, capture_output=False, text=True)
+              if gen_res.returncode != 0:
+                  print(f"::warning::Script generation attempt {attempt} returned non-zero exit code: {gen_res.returncode}")
+                  continue
+
+              try:
+                  candidate_script = extract_script_from_task(".")
+                  is_valid, wc, tw, msg = validate_script_duration_budget(candidate_script, duration)
+                  print(f"Candidate script length: {wc} words (Target: {tw} words) -> {msg}")
+                  if is_valid:
+                      locked_script = candidate_script
+                      print(f"Script duration contract PASS on attempt {attempt}: Locked {wc} words.")
+                      break
+                  else:
+                      print(f"::warning::Script budget validation rejected: {msg}")
+              except Exception as e:
+                  print(f"::warning::Could not extract script on attempt {attempt}: {e}")
+
+          if not locked_script:
+              print(f"::error::FINAL_STATUS=SCRIPT_DURATION_CONTRACT_FAILED: Failed to produce compliant script after {max_attempts} attempts.")
+              sys.exit(1)
+
+          with open("locked_video_script.txt", "w", encoding="utf-8") as f:
+              f.write(locked_script)
+
+          # -----------------------------------------------------------------
+          # Full Video Render with Locked Script & Authoritative Clip Duration
+          # -----------------------------------------------------------------
+          render_args = build_cli_args(
               topic=topic,
               duration=duration,
               voice=voice,
               video_source=video_source,
               video_materials=flow_materials if video_source == "local" else "",
+              video_clip_duration=clip_duration,
+              video_script=locked_script,
           )
-          cmd = [sys.executable, "cli.py"] + cli_args
-          print("Running MPT CLI (topic redacted from log):", cmd[:3], "... [args]")
-
-          result = subprocess.run(cmd, capture_output=False, text=True)
-          sys.exit(result.returncode)
+          render_cmd = [sys.executable, "cli.py"] + render_args
+          print(f"Running Full MPT Render with locked script ({len(locked_script.split())} words) and clip_duration={clip_duration}s...")
+          render_res = subprocess.run(render_cmd, capture_output=False, text=True)
+          sys.exit(render_res.returncode)
           PYEOF
 
       # -------------------------------------------------------

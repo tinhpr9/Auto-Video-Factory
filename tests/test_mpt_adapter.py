@@ -191,6 +191,50 @@ class TestBuildCliArgs:
         idx = args.index("--font-name")
         assert args[idx + 1] == "DejaVuSans-Bold.ttf"
 
+    def test_video_clip_duration_explicit(self):
+        args45 = mpt_adapter.build_cli_args(
+            topic="Test 45s",
+            duration="45",
+            voice="marin",
+            video_clip_duration=8,
+        )
+        assert "--video-clip-duration" in args45
+        idx45 = args45.index("--video-clip-duration")
+        assert args45[idx45 + 1] == "8"
+
+        args90 = mpt_adapter.build_cli_args(
+            topic="Test 90s",
+            duration="90",
+            voice="marin",
+            video_clip_duration=10,
+        )
+        assert "--video-clip-duration" in args90
+        idx90 = args90.index("--video-clip-duration")
+        assert args90[idx90 + 1] == "10"
+
+    def test_custom_video_script_included(self):
+        script = "Đây là kịch bản hoàn chỉnh được khóa trước."
+        args = mpt_adapter.build_cli_args(
+            topic="Test topic",
+            duration="45",
+            voice="marin",
+            video_script=script,
+        )
+        assert "--video-script" in args
+        idx = args.index("--video-script")
+        assert args[idx + 1] == script
+
+    def test_stop_at_argument_included(self):
+        args = mpt_adapter.build_cli_args(
+            topic="Test topic",
+            duration="45",
+            voice="marin",
+            stop_at="script",
+        )
+        assert "--stop-at" in args
+        idx = args.index("--stop-at")
+        assert args[idx + 1] == "script"
+
     def test_invalid_duration_propagates(self):
         with pytest.raises(ValueError):
             self._args(duration="999")
@@ -198,6 +242,53 @@ class TestBuildCliArgs:
     def test_invalid_voice_propagates(self):
         with pytest.raises(ValueError):
             self._args(voice="bad-voice")
+
+
+# ===========================================================================
+# 4.5. Script Duration Budget Validation & Control
+# ===========================================================================
+
+class TestScriptDurationControl:
+    def test_script_duration_validation_accepts_valid_length(self):
+        # 150 words for 45s (target 157)
+        words = ["từ"] * 150
+        script = " ".join(words) + "."
+        valid, word_count, target_words, msg = mpt_adapter.validate_script_duration_budget(script, "45")
+        assert valid is True
+        assert word_count == 150
+        assert target_words == 157
+        assert msg == "OK"
+
+    def test_script_duration_validation_rejects_too_short_script(self):
+        # 50 words for 45s (target 157) -> too short
+        words = ["từ"] * 50
+        script = " ".join(words) + "."
+        valid, word_count, target_words, msg = mpt_adapter.validate_script_duration_budget(script, "45")
+        assert valid is False
+        assert word_count == 50
+        assert "too short" in msg.lower()
+
+    def test_script_duration_validation_rejects_too_long_script(self):
+        # 300 words for 45s (target 157) -> too long
+        words = ["từ"] * 300
+        script = " ".join(words) + "."
+        valid, word_count, target_words, msg = mpt_adapter.validate_script_duration_budget(script, "45")
+        assert valid is False
+        assert word_count == 300
+        assert "too long" in msg.lower()
+
+    def test_script_duration_validation_rejects_empty_script(self):
+        valid, word_count, target_words, msg = mpt_adapter.validate_script_duration_budget("", "45")
+        assert valid is False
+        assert word_count == 0
+        assert "empty" in msg.lower()
+
+    def test_script_duration_validation_rejects_unclosed_sentence(self):
+        words = ["từ"] * 150
+        script = " ".join(words) # missing terminal punctuation
+        valid, word_count, target_words, msg = mpt_adapter.validate_script_duration_budget(script, "45")
+        assert valid is False
+        assert "punctuation" in msg.lower() or "incomplete" in msg.lower()
 
 
 # ===========================================================================
