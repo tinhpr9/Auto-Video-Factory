@@ -151,13 +151,14 @@ jobs:
               clips = stager.stage_media_for_variant(product, variant, stage_dir, base_dir=Path("."))
               print(f"Staged {len(clips)} clips for variant {var_name} in {stage_dir}")
 
+              materials_str = ",".join(str(c.resolve()) for c in clips)
               clip_dur = int(variant.scenes[0].duration_seconds) if variant.scenes else 5
               render_args = build_cli_args(
                   topic=product.title,
                   duration=str(target_duration),
                   voice=voice,
                   video_source="local",
-                  video_materials=str(stage_dir),
+                  video_materials=materials_str,
                   video_clip_duration=clip_dur,
                   video_script=variant.voice_script,
               )
@@ -174,7 +175,21 @@ jobs:
                   print(f"::error::MPT render failed for variant {var_name} with exit code {res.returncode}")
                   sys.exit(res.returncode)
 
-              out_video = locate_output_video(str(mpt_dir))
+              task_id = None
+              if res.stdout:
+                  for line in res.stdout.splitlines():
+                      if "task_id" in line:
+                          try:
+                              start = line.find("{")
+                              end = line.rfind("}")
+                              if start != -1 and end != -1:
+                                  d = json.loads(line[start : end + 1])
+                                  if "task_id" in d:
+                                      task_id = d["task_id"]
+                          except Exception:
+                              pass
+
+              out_video = locate_output_video(str(mpt_dir), task_id=task_id)
               dst_video = Path(f"affiliate-output/{var_name}.mp4")
               shutil.copy2(out_video, dst_video)
               print(f"Successfully generated {dst_video} ({dst_video.stat().st_size} bytes)")

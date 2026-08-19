@@ -52,3 +52,4 @@ def test_affiliate_workflow_noninteractive_and_verification():
     assert "three_reasons" in text
     assert "comparison_highlight" in text
     assert "affiliate-output/${variant}.mp4" in text
+    assert '",".join(' in text, "Materials must be comma-separated file paths for MPT CLI"
