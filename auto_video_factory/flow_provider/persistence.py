@@ -1,48 +1,83 @@
 """
 Persistent storage for Flow job records, crash recovery, and duplicate prevention.
+Includes file locking and non-destructive corruption protection.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows fallback
+
 from .models import FlowJobRecord, FlowJobStatus
+
+log = logging.getLogger(__name__)
 
 
 class JobStateStore:
     """
-    Thread-safe and atomic persistent JSON storage for FlowJobRecords.
+    Thread-safe, process-safe, and atomic persistent JSON storage for FlowJobRecords.
     """
 
     def __init__(self, storage_path: Path):
         self.storage_path = Path(storage_path)
+        self.lock_path = self.storage_path.with_suffix(".lock")
         self._lock = threading.Lock()
         self._jobs: dict[str, FlowJobRecord] = {}
         self._init_and_load()
 
+    def _acquire_file_lock(self):
+        """Cross-process file lock handler."""
+        if fcntl:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            self._lock_file = open(self.lock_path, "a")
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
+
+    def _release_file_lock(self):
+        if fcntl and hasattr(self, "_lock_file") and self._lock_file:
+            try:
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                self._lock_file.close()
+            except Exception:
+                pass
+            self._lock_file = None
+
     def _init_and_load(self):
         with self._lock:
-            if self.storage_path.exists():
-                try:
+            self._acquire_file_lock()
+            try:
+                if self.storage_path.exists():
                     raw = self.storage_path.read_text(encoding="utf-8")
                     if raw.strip():
-                        data = json.loads(raw)
-                        for item in data.get("jobs", []):
-                            record = FlowJobRecord.from_dict(item)
-                            self._jobs[record.job_id] = record
-                except Exception:
-                    # In case of corrupted store, retain empty or backup
-                    pass
-            else:
-                self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-                self._save_unlocked()
+                        try:
+                            data = json.loads(raw)
+                            for item in data.get("jobs", []):
+                                record = FlowJobRecord.from_dict(item)
+                                self._jobs[record.job_id] = record
+                        except Exception as e:
+                            log.error("Corrupted jobs store detected in %s: %s. Preserving backup.", self.storage_path, e)
+                            bak_path = self.storage_path.with_suffix(".json.corrupt.bak")
+                            shutil.copy2(self.storage_path, bak_path)
+                            self._jobs = {}
+                            self._save_unlocked()
+                else:
+                    self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._save_unlocked()
+            finally:
+                self._release_file_lock()
 
     def _save_unlocked(self):
-        """Atomic write via temporary file replacement."""
+        """Atomic write via temporary file replacement under lock."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": 1,
@@ -59,8 +94,12 @@ class JobStateStore:
 
     def save_job(self, record: FlowJobRecord):
         with self._lock:
-            self._jobs[record.job_id] = record
-            self._save_unlocked()
+            self._acquire_file_lock()
+            try:
+                self._jobs[record.job_id] = record
+                self._save_unlocked()
+            finally:
+                self._release_file_lock()
 
     def get_job(self, job_id: str) -> Optional[FlowJobRecord]:
         with self._lock:

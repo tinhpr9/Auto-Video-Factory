@@ -106,6 +106,8 @@ class FlowGenerationRequest:
         hasher.update(normalized_prompt.encode("utf-8"))
         hasher.update(self.model.value.encode("utf-8"))
         hasher.update(self.aspect_ratio.value.encode("utf-8"))
+        if self.start_image_path:
+            hasher.update(str(self.start_image_path).encode("utf-8"))
         self.prompt_hash = hasher.hexdigest()
 
 
