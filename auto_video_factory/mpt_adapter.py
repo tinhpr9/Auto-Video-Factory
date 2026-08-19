@@ -40,6 +40,9 @@ MONEYPRINTERTURBO_REF: str = "b42e945b497176c823579f9b1895d9323446de23"
 # ---------------------------------------------------------------------------
 
 _DURATION_TO_PARAGRAPHS: dict[str, int] = {
+    "15": 1,
+    "20": 2,
+    "30": 3,
     "45": 3,
     "60": 4,
     "90": 6,
@@ -409,13 +412,14 @@ open_task_folder_on_completion = false
 # Output video locator
 # ---------------------------------------------------------------------------
 
-def locate_output_video(mpt_root: str, task_id: str) -> str:
+def locate_output_video(mpt_root: str, task_id: str | None = None) -> str:
     """
     Find the rendered MP4 inside the MPT task output directory.
 
     Args:
         mpt_root: Absolute path to the cloned MPT repo root.
-        task_id:  The task_id returned by cli.py in its JSON stdout.
+        task_id:  Optional task_id returned by cli.py in its JSON stdout.
+                  If omitted, searches for the latest rendered mp4 in storage.
 
     Returns:
         Absolute path to the (non-empty) MP4 file.
@@ -424,17 +428,25 @@ def locate_output_video(mpt_root: str, task_id: str) -> str:
         FileNotFoundError: If no .mp4 is found in the task directory.
         ValueError:        If the found .mp4 is empty (0 bytes).
     """
-    task_dir = os.path.join(mpt_root, "storage", "tasks", task_id)
-    pattern = os.path.join(task_dir, "**", "*.mp4")
-    candidates = glob.glob(pattern, recursive=True)
+    if task_id:
+        task_dir = os.path.join(mpt_root, "storage", "tasks", task_id)
+        pattern = os.path.join(task_dir, "**", "*.mp4")
+        candidates = glob.glob(pattern, recursive=True)
+    else:
+        pattern = os.path.join(mpt_root, "storage", "tasks", "**", "*.mp4")
+        candidates = glob.glob(pattern, recursive=True)
+        if not candidates:
+            pattern_storage = os.path.join(mpt_root, "storage", "**", "*.mp4")
+            candidates = glob.glob(pattern_storage, recursive=True)
 
     if not candidates:
+        search_target = task_dir if task_id else os.path.join(mpt_root, "storage")
         raise FileNotFoundError(
-            f"No mp4 found in task directory: {task_dir}"
+            f"No mp4 found in output directory: {search_target}"
         )
 
-    # Prefer the largest file if multiple exist
-    candidates.sort(key=lambda p: os.path.getsize(p), reverse=True)
+    # Prefer the newest / largest file if multiple exist
+    candidates.sort(key=lambda p: (os.path.getmtime(p), os.path.getsize(p)), reverse=True)
     video_path = candidates[0]
 
     if os.path.getsize(video_path) == 0:

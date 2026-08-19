@@ -142,6 +142,7 @@ class AffiliateMediaStager:
         product: ProductInput,
         variant: AffiliateScript,
         output_dir: Path,
+        base_dir: Path | None = None,
     ) -> list[Path]:
         """
         Stage media files for all scenes in the given affiliate variant.
@@ -153,12 +154,20 @@ class AffiliateMediaStager:
         # 1. Collect valid video files
         for v in product.videos:
             p = Path(v)
+            if not p.is_absolute() and base_dir:
+                candidate = base_dir / p
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    p = candidate
             if p.exists() and p.stat().st_size > 0:
                 unified_media_pool.append(p)
 
         # 2. Collect valid image files
         for img in product.images:
             p = Path(img)
+            if not p.is_absolute() and base_dir:
+                candidate = base_dir / p
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    p = candidate
             if p.exists() and p.stat().st_size > 0:
                 unified_media_pool.append(p)
 

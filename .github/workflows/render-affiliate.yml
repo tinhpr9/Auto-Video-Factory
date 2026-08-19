@@ -101,7 +101,17 @@ jobs:
             cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc mpt_repo/resource/fonts/NotoSans-Bold.ttf
           fi
           # Install MPT dependencies
-          uv pip install --system -r mpt_repo/requirements.txt || true
+          uv pip install --system -r mpt_repo/requirements.txt
+
+      - name: Initialize MPT config.toml
+        run: |
+          python - << 'PYEOF'
+          from pathlib import Path
+          from auto_video_factory.mpt_adapter import build_config_toml
+          cfg_content = build_config_toml(font_name="NotoSans-Bold.ttf")
+          Path("mpt_repo/config.toml").write_text(cfg_content, encoding="utf-8")
+          print("mpt_repo/config.toml initialized successfully.")
+          PYEOF
 
       - name: Stage Media & Render 3 Affiliate Variants
         env:
@@ -141,7 +151,7 @@ jobs:
           for variant in pack.variants:
               var_name = variant.variant_type.value
               stage_dir = Path(f"affiliate_staging/{var_name}_media").resolve()
-              clips = stager.stage_media_for_variant(product, variant, stage_dir)
+              clips = stager.stage_media_for_variant(product, variant, stage_dir, base_dir=Path("."))
               print(f"Staged {len(clips)} clips for variant {var_name} in {stage_dir}")
 
               clip_dur = int(variant.scenes[0].duration_seconds) if variant.scenes else 5
@@ -163,14 +173,14 @@ jobs:
                   print(res.stdout)
               if res.stderr:
                   print(res.stderr, file=sys.stderr)
+              if res.returncode != 0:
+                  print(f"::error::MPT render failed for variant {var_name} with exit code {res.returncode}")
+                  sys.exit(res.returncode)
 
-              try:
-                  out_video = locate_output_video(str(mpt_dir))
-                  dst_video = Path(f"affiliate-output/{var_name}.mp4")
-                  shutil.copy2(out_video, dst_video)
-                  print(f"Successfully generated {dst_video} ({dst_video.stat().st_size} bytes)")
-              except Exception as exc:
-                  print(f"Warning: Could not locate rendered output for {var_name}: {exc}")
+              out_video = locate_output_video(str(mpt_dir))
+              dst_video = Path(f"affiliate-output/{var_name}.mp4")
+              shutil.copy2(out_video, dst_video)
+              print(f"Successfully generated {dst_video} ({dst_video.stat().st_size} bytes)")
           PYEOF
 
       - name: Verify Affiliate Output
@@ -178,9 +188,16 @@ jobs:
           echo "Affiliate pack artifacts generated:"
           ls -la affiliate-output/
           if [ ! -f "affiliate-output/metadata.json" ]; then
-            echo "ERROR: metadata.json missing!"
+            echo "::error::metadata.json missing!"
             exit 1
           fi
+          for variant in problem_solution three_reasons comparison_highlight; do
+            if [ ! -s "affiliate-output/${variant}.mp4" ]; then
+              echo "::error::Missing or empty video: affiliate-output/${variant}.mp4"
+              exit 1
+            fi
+          done
+          echo "All 3 affiliate videos and metadata.json verified successfully."
 
       - name: Upload Affiliate Output Artifacts
         uses: actions/upload-artifact@v4
