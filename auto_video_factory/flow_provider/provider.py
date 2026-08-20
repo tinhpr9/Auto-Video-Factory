@@ -3,10 +3,12 @@ Concrete implementations of FlowProvider: MockFlowProvider and ProductionFlowPro
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -102,6 +104,17 @@ class MockFlowProvider(FlowProvider):
         ]
 
     def generate_video(self, request: FlowGenerationRequest) -> FlowJobResult:
+        if request.start_image_path is not None:
+            p = Path(request.start_image_path)
+            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
+                return FlowJobResult(
+                    job_id=request.job_id,
+                    provider_job_id="",
+                    status=FlowJobStatus.FAILED,
+                    failure_class=FlowFailureClass.UNKNOWN,
+                    failure_message=f"Invalid start_image_path: file does not exist or is empty: {request.start_image_path}",
+                )
+
         self.generate_video_calls += 1
         if self.simulate_latency_s > 0:
             time.sleep(self.simulate_latency_s)
@@ -235,7 +248,8 @@ class ProductionFlowProvider(FlowProvider):
       - UPSTREAM: eddie-fqh/flow-py ONLY. Never google-flow-cli / veo3tool /
         veo-automation-extension.
       - Lazy-imports flow-py so the package is not required for mock/test paths.
-      - Sync bridge: _run() wraps all async FlowClient calls.
+      - Sync bridge: _run() executes all async FlowClient calls on a persistent,
+        dedicated background event loop thread.
       - Zero CAPTCHA bypass. USER_INTERACTION_REQUIRED on any auth/UI failure.
       - Zero EXPERIMENTAL_RPC fallback (EXPERIMENTAL_RPC_PROVIDER = False).
       - Fail-closed: any exception that is not a generation transient maps to
@@ -243,7 +257,7 @@ class ProductionFlowProvider(FlowProvider):
 
     Required environment (set before use):
       ~/.flow-py/config.json  — written by `flow login` from flow-py CLI
-      ~/.flow-py/browser-profile/  — Playwright persistent context with live session
+      ~/.flow-py/browser-profile/  — Playwright persistent context with live session (if not using CDP)
 
     Optional constructor args:
       project_id   — Flow project UUID (falls back to flow-py's saved active project)
@@ -255,6 +269,10 @@ class ProductionFlowProvider(FlowProvider):
     UPSTREAM_REPO     = "eddie-fqh/flow-py"
     UPSTREAM_COMMIT   = "bd01679304d6fccc4c96fea3b33151c2e9e836f4"
     UPSTREAM_PYPI_VER = "0.1.0"
+
+    _global_loop: Optional[asyncio.AbstractEventLoop] = None
+    _global_thread: Optional[threading.Thread] = None
+    _global_lock = threading.RLock()
 
     def __init__(
         self,
@@ -269,9 +287,19 @@ class ProductionFlowProvider(FlowProvider):
         self._project_id = project_id
         self._cdp_url    = cdp_url or cdp_endpoint
         self._headless   = headless
-        # _client is created lazily on first real call so health() can be called
-        # before the browser is launched.
-        self._client_cache: Optional[object] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._client: Optional[object] = None
+        self._lock = threading.RLock()
+
+    @property
+    def _client_cache(self) -> Optional[object]:
+        """Backward-compatible property alias for _client."""
+        return self._client
+
+    @_client_cache.setter
+    def _client_cache(self, value: Optional[object]) -> None:
+        self._client = value
 
     # ── Import guard ──────────────────────────────────────────────────────────
 
@@ -295,38 +323,102 @@ class ProductionFlowProvider(FlowProvider):
                 "Install with: pip install 'auto-video-factory[prod]'"
             ) from exc
 
-    # ── Async bridge ─────────────────────────────────────────────────────────
+    # ── Async bridge & event loop lifecycle ───────────────────────────────────
 
-    @staticmethod
-    def _run(coro):
-        """Run an async coroutine synchronously."""
-        import asyncio  # noqa: PLC0415
+    @classmethod
+    def _get_global_loop(cls) -> asyncio.AbstractEventLoop:
+        with cls._global_lock:
+            if cls._global_loop is None or cls._global_loop.is_closed():
+                loop = asyncio.new_event_loop()
+                def _worker():
+                    asyncio.set_event_loop(loop)
+                    loop.run_forever()
+                thread = threading.Thread(
+                    target=_worker,
+                    daemon=True,
+                    name="ProductionFlowGlobalRunner",
+                )
+                thread.start()
+                cls._global_loop = loop
+                cls._global_thread = thread
+            return cls._global_loop
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """Ensure persistent event loop running in a dedicated background thread for this provider."""
+        with self._lock:
+            if self._loop is None or self._loop.is_closed():
+                loop = asyncio.new_event_loop()
+                def _worker():
+                    asyncio.set_event_loop(loop)
+                    loop.run_forever()
+                thread = threading.Thread(
+                    target=_worker,
+                    daemon=True,
+                    name="ProductionFlowRunner",
+                )
+                thread.start()
+                self._loop = loop
+                self._thread = thread
+            return self._loop
+
+    def _run(self_or_cls, coro):
+        """
+        Run an async coroutine synchronously on the persistent dedicated event loop.
+        Works both as an instance method (provider._run) and class/static method (ProductionFlowProvider._run).
+        """
+        if isinstance(self_or_cls, ProductionFlowProvider):
+            loop = self_or_cls._ensure_loop()
+        else:
+            loop = ProductionFlowProvider._get_global_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+    def close(self) -> None:
+        """Orderly shutdown: close underlying client and stop the persistent event loop thread."""
+        with self._lock:
+            if self._client is not None:
+                if hasattr(self._client, "close"):
+                    try:
+                        if self._loop is not None and not self._loop.is_closed():
+                            fut = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
+                            fut.result(timeout=5.0)
+                    except Exception as exc:
+                        log.debug("Error closing client during provider shutdown: %s", exc)
+                self._client = None
+            if self._loop is not None and not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                if self._thread is not None and self._thread.is_alive():
+                    self._thread.join(timeout=2.0)
+                self._loop = None
+                self._thread = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None and loop.is_running():
-            import concurrent.futures  # noqa: PLC0415
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, coro)
-                return future.result()
-        return asyncio.run(coro)
+            self.close()
+        except Exception:
+            pass
 
     # ── FlowClient factory ───────────────────────────────────────────────────
 
     def _get_client(self):
-        """Return cached FlowClient or create a new one."""
-        if self._client_cache is None:
-            FlowClient, _, _ = self._import_flow()
-            self._client_cache = self._run(
-                FlowClient.create(
-                    project_id=self._project_id,
-                    headless=self._headless,
-                    cdp_url=self._cdp_url,
+        """Return cached FlowClient or create a new one on the persistent event loop."""
+        with self._lock:
+            if self._client is None:
+                FlowClient, _, _ = self._import_flow()
+                self._client = self._run(
+                    FlowClient.create(
+                        project_id=self._project_id,
+                        headless=self._headless,
+                        cdp_url=self._cdp_url,
+                    )
                 )
-            )
-        return self._client_cache
+            return self._client
 
     # ── Exception classification ─────────────────────────────────────────────
 
@@ -357,8 +449,9 @@ class ProductionFlowProvider(FlowProvider):
 
     def health(self) -> FlowHealthStatus:
         """
-        Check health by attempting to import flow-py and reach an active project.
+        Check health by attempting to import flow-py and validate project and browser readiness.
         Never launches browser here — only validates that the package and config exist.
+        In CDP mode, local browser profile is NOT required.
         """
         try:
             FlowClient, flow_exc, _ = self._import_flow()
@@ -378,7 +471,7 @@ class ProductionFlowProvider(FlowProvider):
                 },
             )
 
-        # Check saved profile exists (browser session)
+        # Check saved profile exists (browser session) and active project
         try:
             from flow._storage import PROFILE_DIR, get_active_project  # noqa: PLC0415
             profile_exists = PROFILE_DIR.exists()
@@ -386,9 +479,28 @@ class ProductionFlowProvider(FlowProvider):
             has_project = bool(project_id or self._project_id)
         except Exception:
             profile_exists = False
-            has_project = False
+            has_project = bool(self._project_id)
 
-        is_healthy = profile_exists and has_project
+        # CDP configuration validation
+        has_cdp = bool(self._cdp_url and self._cdp_url.strip())
+        cdp_valid = False
+        cdp_error = None
+        if has_cdp:
+            cdp_str = self._cdp_url.strip()
+            if any(cdp_str.startswith(prefix) for prefix in ("http://", "https://", "ws://", "wss://", "localhost:", "127.0.0.1:")):
+                cdp_valid = True
+            else:
+                cdp_error = f"invalid_cdp_url: '{cdp_str}' must start with http://, https://, ws://, or wss://"
+
+        if has_cdp:
+            browser_ready = cdp_valid
+            authenticated = cdp_valid  # In CDP mode, auth is managed by external Chrome session
+            is_healthy = cdp_valid and has_project
+        else:
+            browser_ready = profile_exists
+            authenticated = profile_exists
+            is_healthy = profile_exists and has_project
+
         details: dict = {
             "provider_type": "production",
             "upstream": self.UPSTREAM_REPO,
@@ -398,17 +510,19 @@ class ProductionFlowProvider(FlowProvider):
         }
         if not is_healthy:
             reasons = []
-            if not profile_exists:
-                reasons.append("unauthenticated: missing_auth (browser_profile_missing — run 'flow login')")
+            if has_cdp and not cdp_valid:
+                reasons.append(cdp_error or "invalid_cdp_url")
+            elif not has_cdp and not profile_exists:
+                reasons.append("unauthenticated: missing_auth (browser_profile_missing — run 'flow login' or configure cdp_url)")
             if not has_project:
-                reasons.append("no_active_project — run 'flow projects use <id>'")
+                reasons.append("no_active_project — run 'flow projects use <id>' or pass project_id")
             details["reason"] = "; ".join(reasons)
 
         return FlowHealthStatus(
             healthy=is_healthy,
-            authenticated=profile_exists,
+            authenticated=authenticated,
             profile_exists=profile_exists,
-            browser_ready=bool(self._cdp_url) or profile_exists,
+            browser_ready=browser_ready,
             details=details,
         )
 
@@ -430,30 +544,71 @@ class ProductionFlowProvider(FlowProvider):
             raise
 
     def get_models(self) -> list[FlowModelInfo]:
-        """Return the three standard T2V models matching our FlowModel enum."""
-        return [
-            FlowModelInfo(
-                model_id=FlowModel.VEO_3_1_FAST.value,
-                name="Veo 3.1 Fast (portrait, audio, 20cr)",
-                capabilities=["text_to_video", "image_to_video", "audio"],
-                cost_credits=20,
-                default_aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
-            ),
-            FlowModelInfo(
-                model_id=FlowModel.VEO_3_1_QUALITY.value,
-                name="Veo 3.1 Quality (portrait, audio, 100cr)",
-                capabilities=["text_to_video", "image_to_video", "audio", "upscale"],
-                cost_credits=100,
-                default_aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
-            ),
-            FlowModelInfo(
-                model_id=FlowModel.VEO_2_1_FAST.value,
-                name="Veo 2.1 Fast (portrait, no-audio, 10cr)",
-                capabilities=["text_to_video", "image_to_video"],
-                cost_credits=10,
-                default_aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
-            ),
-        ]
+        """
+        Dynamically fetch video model configuration from flow-py client.
+
+        Maps upstream videoModels into Auto-Video's public FlowModelInfo contract.
+        """
+        _, flow_exc, _ = self._import_flow()
+        try:
+            client = self._get_client()
+            if hasattr(client, "get_model_config"):
+                config = self._run(client.get_model_config())
+            elif hasattr(client, "_api") and hasattr(client._api, "get_video_model_config"):
+                config = self._run(client._api.get_video_model_config())
+            else:
+                config = {}
+
+            video_models = []
+            if isinstance(config, dict):
+                video_models = config.get("videoModels") or config.get("result", {}).get("videoModels") or []
+
+            models_out: list[FlowModelInfo] = []
+            for item in video_models:
+                if not isinstance(item, dict):
+                    continue
+                # Skip deprecated models
+                if item.get("modelStatus") == "MODEL_STATUS_DEPRECATED":
+                    continue
+                key = item.get("key") or item.get("id") or item.get("model_id") or ""
+                if not key:
+                    continue
+                display_name = item.get("displayName") or item.get("display_name") or key
+                cost = int(item.get("creditCost") or item.get("credit_cost") or item.get("cost") or 20)
+                raw_caps = item.get("capabilities") or ["text_to_video"]
+                caps = [c.lower().replace("start_image", "image_to_video").replace("text", "text_to_video") for c in raw_caps]
+                seen = set()
+                dedup_caps = []
+                for c in caps:
+                    if c not in seen:
+                        seen.add(c)
+                        dedup_caps.append(c)
+
+                aspects = item.get("supportedAspectRatios") or []
+                if "PORTRAIT" in aspects or "9:16" in aspects:
+                    def_aspect = FlowAspectRatio.PORTRAIT_9_16
+                elif "LANDSCAPE" in aspects or "16:9" in aspects:
+                    def_aspect = FlowAspectRatio.LANDSCAPE_16_9
+                elif "SQUARE" in aspects or "1:1" in aspects:
+                    def_aspect = FlowAspectRatio.SQUARE_1_1
+                else:
+                    def_aspect = FlowAspectRatio.PORTRAIT_9_16
+
+                models_out.append(
+                    FlowModelInfo(
+                        model_id=key,
+                        name=display_name,
+                        capabilities=dedup_caps,
+                        cost_credits=cost,
+                        default_aspect_ratio=def_aspect,
+                    )
+                )
+
+            return models_out
+        except Exception as exc:
+            failure_cls = self._classify_exception(exc, flow_exc)
+            log.error("get_models failed (%s): %s", failure_cls.value, exc)
+            raise
 
     def generate_video(self, request: FlowGenerationRequest) -> FlowJobResult:
         """
@@ -475,6 +630,21 @@ class ProductionFlowProvider(FlowProvider):
                 failure_message=f"ProductionFlowProvider only supports count=1, got {request.count}",
             )
 
+        # Validate start image if specified (fail closed if missing/empty to avoid degrading I2V to T2V)
+        start_image: Optional[str] = None
+        if request.start_image_path is not None:
+            p = Path(request.start_image_path)
+            if not p.exists() or not p.is_file() or p.stat().st_size == 0:
+                log.error("Invalid start_image_path: %s", request.start_image_path)
+                return FlowJobResult(
+                    job_id=request.job_id,
+                    provider_job_id="",
+                    status=FlowJobStatus.FAILED,
+                    failure_class=FlowFailureClass.UNKNOWN,
+                    failure_message=f"Invalid start_image_path: file does not exist or is empty: {request.start_image_path}",
+                )
+            start_image = str(p)
+
         _, flow_exc, _ = self._import_flow()
 
         # Map aspect ratio
@@ -484,11 +654,6 @@ class ProductionFlowProvider(FlowProvider):
             FlowAspectRatio.SQUARE_1_1:     "square",
         }
         aspect_str = aspect_map.get(request.aspect_ratio, "portrait")
-
-        # Map start image
-        start_image: Optional[str] = None
-        if request.start_image_path and Path(request.start_image_path).exists():
-            start_image = str(request.start_image_path)
 
         try:
             client = self._get_client()
