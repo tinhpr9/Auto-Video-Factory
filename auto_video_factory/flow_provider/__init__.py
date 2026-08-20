@@ -1,6 +1,7 @@
 """
 Google Flow Provider Foundation package.
 """
+from .android import AndroidCDPManager, ForegroundPolicy
 from .contract import FlowProvider
 from .controller import FlowController
 from .models import (
@@ -28,6 +29,8 @@ from .visual_provider import (
 )
 
 __all__ = [
+    "AndroidCDPManager",
+    "ForegroundPolicy",
     "FlowProvider",
     "FlowController",
     "MockFlowProvider",
@@ -53,3 +56,4 @@ __all__ = [
     "FLOW_MODE_TO_MODEL",
     "FLOW_MODEL_MAP",
 ]
+

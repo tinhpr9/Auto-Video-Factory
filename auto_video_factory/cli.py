@@ -82,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Connect to existing Chrome CDP endpoint (default: reads from FLOW_CDP_URL)",
     )
+    parser.add_argument(
+        "--flow-foreground-policy",
+        choices=("auto", "background", "micro-foreground"),
+        default=None,
+        help="Flow foreground policy for Android CDP (default: reads from FLOW_FOREGROUND_POLICY or 'auto')",
+    )
 
     # OpenAI provider controls. Secrets are read only from OPENAI_API_KEY.
     parser.add_argument("--script-model", default="gpt-5-mini")
@@ -118,6 +124,7 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
             FlowController,
             FlowModel,
             FlowVisualProvider,
+            ForegroundPolicy,
             MockFlowProvider,
             ProductionFlowProvider,
             FLOW_MODEL_MAP,
@@ -129,15 +136,18 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
         else:
             project_id = getattr(args, "flow_project_id", None) or os.getenv("FLOW_PROJECT_ID")
             cdp_url = getattr(args, "flow_cdp_url", None) or os.getenv("FLOW_CDP_URL")
+            foreground_policy = getattr(args, "flow_foreground_policy", None) or os.getenv("FLOW_FOREGROUND_POLICY")
             prov = ProductionFlowProvider(
                 project_id=project_id,
                 cdp_url=cdp_url,
+                foreground_policy=foreground_policy,
             )
         controller = FlowController(
             provider=prov,
             storage_path=storage_path,
             output_dir=output_scenes_dir,
         )
+
         explicit_model = FLOW_MODEL_MAP.get(args.flow_model) if args.flow_model else None
         visual_provider = FlowVisualProvider(
             controller=controller,
