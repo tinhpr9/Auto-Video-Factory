@@ -7,8 +7,12 @@ import subprocess
 import textwrap
 from pathlib import Path
 from typing import Sequence
-
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 from .models import Scene
 
@@ -74,6 +78,8 @@ class CardImageProvider:
         return ImageFont.load_default()
 
     def create(self, scene: Scene, output: Path) -> Path:
+        if Image is None:
+            raise RuntimeError("Pillow is required for CardImageProvider. Install with: pip install pillow")
         output.parent.mkdir(parents=True, exist_ok=True)
         image = Image.new("RGB", (self.width, self.height))
         pixels = image.load()
@@ -165,19 +171,33 @@ class FFmpegRenderer:
             duration = media_duration(audio)
             clip = work / f"clip-{index:02d}.mp4"
             frames = max(1, math.ceil(duration * self.fps))
-            # Subtle zoom/pan keeps still illustrations alive without copying reference assets.
-            vf = (
-                f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
-                f"crop={self.width}:{self.height},"
-                f"zoompan=z='min(zoom+0.0007,1.06)':d={frames}:"
-                f"s={self.width}x{self.height}:fps={self.fps},format=yuv420p"
-            )
-            _run([
-                ffmpeg, "-y", "-loop", "1", "-i", str(image), "-i", str(audio),
-                "-vf", vf, "-t", f"{duration:.3f}", "-r", str(self.fps),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
-                "-c:a", "aac", "-b:a", "128k", "-shortest", str(clip),
-            ])
+            if image.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                vf = (
+                    f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+                    f"crop={self.width}:{self.height},"
+                    f"format=yuv420p"
+                )
+                _run([
+                    ffmpeg, "-y", "-stream_loop", "-1", "-i", str(image), "-i", str(audio),
+                    "-vf", vf, "-t", f"{duration:.3f}", "-r", str(self.fps),
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                    "-c:a", "aac", "-b:a", "128k", "-shortest", str(clip),
+                ])
+            else:
+                # Subtle zoom/pan keeps still illustrations alive without copying reference assets.
+                vf = (
+                    f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
+                    f"crop={self.width}:{self.height},"
+                    f"zoompan=z='min(zoom+0.0007,1.06)':d={frames}:"
+                    f"s={self.width}x{self.height}:fps={self.fps},format=yuv420p"
+                )
+                _run([
+                    ffmpeg, "-y", "-loop", "1", "-i", str(image), "-i", str(audio),
+                    "-vf", vf, "-t", f"{duration:.3f}", "-r", str(self.fps),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+                    "-c:a", "aac", "-b:a", "128k", "-shortest", str(clip),
+                ])
             clips.append(clip)
 
         concat_list = self._concat_file(clips, work / "clips.txt")

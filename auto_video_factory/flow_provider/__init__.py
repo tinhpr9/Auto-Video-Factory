@@ -18,6 +18,12 @@ from .models import (
 from .persistence import JobStateStore
 from .provider import MockFlowProvider, ProductionFlowProvider
 from .queue import JobQueue, RateLimiter, RetryPolicy
+from .visual_provider import (
+    FlowGenerationError,
+    FlowProviderError,
+    FlowUserInteractionRequiredError,
+    FlowVisualProvider,
+)
 
 __all__ = [
     "FlowProvider",
@@ -38,4 +44,8 @@ __all__ = [
     "RateLimiter",
     "RetryPolicy",
     "JobStateStore",
+    "FlowVisualProvider",
+    "FlowProviderError",
+    "FlowUserInteractionRequiredError",
+    "FlowGenerationError",
 ]

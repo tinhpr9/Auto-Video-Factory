@@ -33,7 +33,7 @@ from .presets import DURATION_TO_SCENES, STYLE_OPTIONS, VOICE_OPTIONS
 
 @dataclass(frozen=True)
 class WebSettings:
-    provider: Literal["offline", "openai"] = "offline"
+    provider: Literal["offline", "openai", "flow"] = "offline"
     output_root: Path = Path("output/web")
     max_workers: int = 1
     host: str = "0.0.0.0"
@@ -46,8 +46,8 @@ class WebSettings:
     @classmethod
     def from_env(cls) -> "WebSettings":
         provider = os.getenv("AVF_PROVIDER", "offline").strip().lower()
-        if provider not in {"offline", "openai"}:
-            raise ValueError("AVF_PROVIDER must be offline or openai")
+        if provider not in {"offline", "openai", "flow"}:
+            raise ValueError("AVF_PROVIDER must be offline, openai, or flow")
         max_workers = int(os.getenv("AVF_MAX_WORKERS", "1"))
         if not 1 <= max_workers <= 4:
             raise ValueError("AVF_MAX_WORKERS must be between 1 and 4")
@@ -59,8 +59,8 @@ class WebSettings:
             access_code = access_code.strip()
             if len(access_code) < 12:
                 raise ValueError("AVF_ACCESS_CODE must be at least 12 characters")
-        if provider == "openai" and not access_code:
-            raise ValueError("AVF_ACCESS_CODE is required when AVF_PROVIDER=openai")
+        if provider in {"openai", "flow"} and not os.getenv("AVF_FLOW_MOCK", "").lower() in ("1", "true", "yes") and not access_code:
+            raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={provider}")
         session_ttl_seconds = int(os.getenv("AVF_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
         auth_attempts_per_minute = int(os.getenv("AVF_AUTH_ATTEMPTS_PER_MINUTE", "5"))
         max_jobs_per_hour = int(os.getenv("AVF_MAX_JOBS_PER_HOUR", "12"))
@@ -214,7 +214,7 @@ class ConfigOption(BaseModel):
 
 
 class WebConfig(BaseModel):
-    provider: Literal["offline", "openai"]
+    provider: Literal["offline", "openai", "flow"]
     durations: list[int]
     voices: list[ConfigOption]
     styles: list[ConfigOption]
@@ -242,6 +242,45 @@ def build_factory_for_request(request: WebJobRequest, settings: WebSettings) -> 
             planner=TemplateStoryPlanner(scene_count=scenes),
             tts=EspeakTTS(language="vi", speed=175),
             image_provider=CardImageProvider(width=720, height=1280),
+            renderer=renderer,
+        )
+
+    if settings.provider == "flow":
+        from .flow_provider import (
+            FlowAspectRatio,
+            FlowController,
+            FlowModel,
+            FlowVisualProvider,
+            MockFlowProvider,
+            ProductionFlowProvider,
+        )
+        storage_path = settings.output_root / "flow_jobs.json"
+        scenes_dir = settings.output_root / "scenes"
+        if os.getenv("AVF_FLOW_MOCK", "").lower() in ("1", "true", "yes"):
+            prov = MockFlowProvider(initial_credits=200)
+        else:
+            session_token = os.getenv("FLOW_SESSION_TOKEN")
+            profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+            prov = ProductionFlowProvider(
+                auth_token=session_token,
+                profile_path=Path(profile_path) if profile_path else None,
+            )
+        controller = FlowController(
+            provider=prov,
+            storage_path=storage_path,
+            output_dir=scenes_dir,
+        )
+        visual_provider = FlowVisualProvider(
+            controller=controller,
+            model=FlowModel.VEO_3_1_FAST,
+            aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+            width=720,
+            height=1280,
+        )
+        return VideoFactory(
+            planner=TemplateStoryPlanner(scene_count=scenes),
+            tts=EspeakTTS(language="vi", speed=175),
+            image_provider=visual_provider,
             renderer=renderer,
         )
 

@@ -142,7 +142,7 @@ def test_failed_job_returns_safe_user_error_without_provider_secret(tmp_path: Pa
 def test_video_route_is_not_available_before_job_finishes(tmp_path: Path):
     class SlowFactory(FakeFactory):
         def generate(self, topic: str, job_dir: Path, on_progress=None) -> GenerationResult:
-            time.sleep(0.15)
+            time.sleep(0.6)
             return super().generate(topic, job_dir, on_progress=on_progress)
 
     settings = WebSettings(provider="offline", output_root=tmp_path / "jobs", max_workers=1)

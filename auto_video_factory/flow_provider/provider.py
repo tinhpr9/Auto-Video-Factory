@@ -54,6 +54,7 @@ class MockFlowProvider(FlowProvider):
         self.consumed_credits = 0
         self.simulate_failure = simulate_failure
         self.simulate_latency_s = simulate_latency_s
+        self.generate_video_calls = 0
 
     def health(self) -> FlowHealthStatus:
         return FlowHealthStatus(
@@ -98,6 +99,7 @@ class MockFlowProvider(FlowProvider):
         ]
 
     def generate_video(self, request: FlowGenerationRequest) -> FlowJobResult:
+        self.generate_video_calls += 1
         if self.simulate_latency_s > 0:
             time.sleep(self.simulate_latency_s)
 

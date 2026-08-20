@@ -88,7 +88,7 @@ class FlowController:
 
     def submit(
         self,
-        prompt: str,
+        prompt: str | FlowGenerationRequest,
         model: FlowModel = FlowModel.VEO_3_1_FAST,
         aspect_ratio: FlowAspectRatio = FlowAspectRatio.PORTRAIT_9_16,
         count: int = 1,
@@ -100,17 +100,21 @@ class FlowController:
         Submit a new generation request. Deduplicates active requests with identical prompt hash,
         and strictly rejects custom job_id collisions for differing requests.
         """
-        assigned_id = job_id or f"flow_{uuid.uuid4().hex[:12]}"
-        req = FlowGenerationRequest(
-            job_id=assigned_id,
-            prompt=prompt,
-            model=model,
-            aspect_ratio=aspect_ratio,
-            count=count,
-            output_dir=self.output_dir,
-            priority=priority,
-            start_image_path=start_image_path,
-        )
+        if isinstance(prompt, FlowGenerationRequest):
+            req = prompt
+            assigned_id = req.job_id
+        else:
+            assigned_id = job_id or f"flow_{uuid.uuid4().hex[:12]}"
+            req = FlowGenerationRequest(
+                job_id=assigned_id,
+                prompt=prompt,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                count=count,
+                output_dir=self.output_dir,
+                priority=priority,
+                start_image_path=start_image_path,
+            )
 
         with self._mutex:
             # 1. Custom job_id collision check
@@ -422,7 +426,7 @@ class FlowController:
                     job.updated_at = time.time()
                     self.store.save_job(job)
 
-            elif job.status in (FlowJobStatus.PENDING, FlowJobStatus.GENERATING) and job.provider_job_id:
+            elif job.status in (FlowJobStatus.SUBMITTED, FlowJobStatus.PENDING, FlowJobStatus.GENERATING) and job.provider_job_id:
                 log.info("Resuming active job %s (provider_job_id: %s)", job.job_id, job.provider_job_id)
                 resolved = self._poll_and_resolve_job(
                     record=job,
