@@ -316,6 +316,8 @@ class FlowController:
             # SUBMITTED / PENDING -> Poll loop until terminal state
             provider_job_id = res.provider_job_id
             record.provider_job_id = provider_job_id
+            if res.runtime_evidence.get("project_id"):
+                record.project_id = res.runtime_evidence["project_id"]
             record.status = FlowJobStatus.PENDING
             record.updated_at = time.time()
             self.store.save_job(record)
@@ -434,6 +436,8 @@ class FlowController:
         # SUBMITTED / PENDING -> Poll loop until terminal state or timeout
         provider_job_id = res.provider_job_id
         record.provider_job_id = provider_job_id
+        if res.runtime_evidence.get("project_id"):
+            record.project_id = res.runtime_evidence["project_id"]
         record.status = FlowJobStatus.PENDING
         record.updated_at = time.time()
         self.store.save_job(record)
@@ -450,42 +454,45 @@ class FlowController:
         self,
         record: FlowJobRecord,
         provider_job_id: str,
-        start_time: Optional[float] = None,
-        credit_before: Optional[int] = None,
-        credit_after: Optional[int] = None,
+        start_time: float,
+        credit_before: int = 0,
+        credit_after: int = 0,
     ) -> Optional[FlowJobResult]:
         """
-        Bounded polling state machine: monitors an in-flight provider job until terminal state
-        (COMPLETED, FAILED, USER_INTERACTION_REQUIRED, or TIMEOUT).
-        Applies retry policy to transient poll errors without ever calling generate_video().
+        Inner poll loop running until terminal state (COMPLETED, FAILED, USER_INTERACTION_REQUIRED, or timeout).
         """
-        start_time = start_time or time.time()
-        poll_start = time.time()
         poll_failures = 0
 
-        while time.time() - poll_start < self.poll_timeout_s:
+        while True:
+            # Check for safety pause triggered externally
             if self._is_safety_paused():
-                log.warning("Safety pause encountered during polling loop for job %s", record.job_id)
+                log.warning("FlowController paused during poll resolution for job %s", record.job_id)
                 return None
 
-            # Check if another thread/worker already resolved this job to COMPLETED in the store
-            current_record = self.store.get_job(record.job_id)
-            if current_record and current_record.status == FlowJobStatus.COMPLETED:
-                valid_files = [f for f in current_record.output_paths if f.exists() and f.is_file() and f.stat().st_size > 0]
-                if valid_files:
-                    return FlowJobResult(
-                        job_id=current_record.job_id,
-                        provider_job_id=current_record.provider_job_id,
-                        status=FlowJobStatus.COMPLETED,
-                        output_files=valid_files,
-                        credit_before=credit_before,
-                        credit_after=credit_after,
-                    )
+            # Bounded timeout check across polling loop
+            if time.time() - start_time > self.poll_timeout_s:
+                log.error("Job %s timed out waiting for provider completion (>%ds)", record.job_id, self.poll_timeout_s)
+                record.status = FlowJobStatus.FAILED
+                record.failure_class = FlowFailureClass.TIMEOUT
+                record.failure_message = f"Job exceeded max polling timeout of {self.poll_timeout_s}s"
+                record.updated_at = time.time()
+                self.store.save_job(record)
+                return FlowJobResult(
+                    job_id=record.job_id,
+                    provider_job_id=provider_job_id,
+                    status=FlowJobStatus.FAILED,
+                    failure_class=FlowFailureClass.TIMEOUT,
+                    failure_message=record.failure_message,
+                    elapsed_seconds=time.time() - start_time,
+                )
+
+            # Perform non-spinning poll interval wait
+            time.sleep(self.poll_interval_s)
 
             try:
                 polled_res = self.provider.poll(provider_job_id)
             except Exception as exc:
-                log.exception("Provider exception during poll for %s: %s", provider_job_id, exc)
+                log.warning("Exception during provider.poll() for %s: %s", provider_job_id, exc)
                 polled_res = FlowJobResult(
                     job_id=record.job_id,
                     provider_job_id=provider_job_id,
@@ -498,6 +505,36 @@ class FlowController:
                 try:
                     files = self.provider.download(provider_job_id, self.output_dir)
                 except Exception as exc:
+                    is_auth_ui = False
+                    try:
+                        import flow._exceptions as flow_exc  # noqa: PLC0415
+                        if isinstance(exc, (flow_exc.AuthError, flow_exc.NotLoggedInError, flow_exc.UIError)):
+                            is_auth_ui = True
+                    except ImportError:
+                        pass
+                    if not is_auth_ui:
+                        exc_name = type(exc).__name__.lower()
+                        exc_msg = str(exc).lower()
+                        if any(w in exc_name or w in exc_msg for w in ("auth", "login", "notloggedin", "uierror", "captcha", "session", "userinteraction")):
+                            is_auth_ui = True
+
+                    if is_auth_ui:
+                        log.error("USER_INTERACTION_REQUIRED during download for job %s: %s", record.job_id, exc)
+                        with self._mutex:
+                            self.is_paused = True
+                        record.status = FlowJobStatus.USER_INTERACTION_REQUIRED
+                        record.failure_class = FlowFailureClass.USER_INTERACTION_REQUIRED
+                        record.failure_message = f"User interaction required during download: {exc}"
+                        record.updated_at = time.time()
+                        self.store.save_job(record)
+                        return FlowJobResult(
+                            job_id=record.job_id,
+                            provider_job_id=provider_job_id,
+                            status=FlowJobStatus.USER_INTERACTION_REQUIRED,
+                            failure_class=FlowFailureClass.USER_INTERACTION_REQUIRED,
+                            failure_message=f"User interaction required during download: {exc}",
+                        )
+
                     log.exception("Download exception for %s: %s", provider_job_id, exc)
                     files = []
 
@@ -617,7 +654,7 @@ class FlowController:
                     resolved = self._poll_and_resolve_job(
                         record=job,
                         provider_job_id=job.provider_job_id,
-                        start_time=job.created_at,
+                        start_time=time.time(),
                     )
                     if resolved is not None:
                         results.append(resolved)
@@ -634,7 +671,7 @@ class FlowController:
                 resolved = self._poll_and_resolve_job(
                     record=job,
                     provider_job_id=job.provider_job_id,
-                    start_time=job.created_at,
+                    start_time=time.time(),
                 )
                 if resolved is not None:
                     results.append(resolved)

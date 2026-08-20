@@ -72,6 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Use MockFlowProvider instead of ProductionFlowProvider (zero paid credit spend)",
     )
+    parser.add_argument(
+        "--flow-project-id",
+        default=None,
+        help="Google Flow Project UUID (default: reads from FLOW_PROJECT_ID or ~/.flow-py/config.json)",
+    )
+    parser.add_argument(
+        "--flow-cdp-url",
+        default=None,
+        help="Connect to existing Chrome CDP endpoint (default: reads from FLOW_CDP_URL)",
+    )
 
     # OpenAI provider controls. Secrets are read only from OPENAI_API_KEY.
     parser.add_argument("--script-model", default="gpt-5-mini")
@@ -117,11 +127,11 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
         if args.flow_mock or os.getenv("AVF_FLOW_MOCK", "").lower() in ("1", "true", "yes"):
             prov = MockFlowProvider(initial_credits=200)
         else:
-            session_token = os.getenv("FLOW_SESSION_TOKEN")
-            profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+            project_id = getattr(args, "flow_project_id", None) or os.getenv("FLOW_PROJECT_ID")
+            cdp_url = getattr(args, "flow_cdp_url", None) or os.getenv("FLOW_CDP_URL")
             prov = ProductionFlowProvider(
-                auth_token=session_token,
-                profile_path=Path(profile_path) if profile_path else None,
+                project_id=project_id,
+                cdp_url=cdp_url,
             )
         controller = FlowController(
             provider=prov,

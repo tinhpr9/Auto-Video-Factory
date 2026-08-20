@@ -268,11 +268,11 @@ def build_factory_for_request(
             if settings.flow_mock:
                 prov = MockFlowProvider(initial_credits=200)
             else:
-                session_token = os.getenv("FLOW_SESSION_TOKEN")
-                profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+                project_id = os.getenv("FLOW_PROJECT_ID")
+                cdp_url = os.getenv("FLOW_CDP_URL")
                 prov = ProductionFlowProvider(
-                    auth_token=session_token,
-                    profile_path=Path(profile_path) if profile_path else None,
+                    project_id=project_id,
+                    cdp_url=cdp_url,
                 )
             controller = FlowController(
                 provider=prov,
@@ -440,11 +440,11 @@ def create_app(
         if resolved.flow_mock:
             prov = MockFlowProvider(initial_credits=200)
         else:
-            session_token = os.getenv("FLOW_SESSION_TOKEN")
-            profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+            project_id = os.getenv("FLOW_PROJECT_ID")
+            cdp_url = os.getenv("FLOW_CDP_URL")
             prov = ProductionFlowProvider(
-                auth_token=session_token,
-                profile_path=Path(profile_path) if profile_path else None,
+                project_id=project_id,
+                cdp_url=cdp_url,
             )
         shared_flow_controller = FlowController(
             provider=prov,

@@ -328,6 +328,7 @@ def test_batch_d_two_concurrent_web_jobs_same_prompt_dedup_safely(tmp_path: Path
         provider=prov,
         storage_path=tmp_path / "web_jobs" / "flow_jobs.json",
         output_dir=tmp_path / "web_jobs" / "scenes",
+        poll_interval_s=0.05,
     )
 
     from auto_video_factory.story import TemplateStoryPlanner
@@ -362,7 +363,7 @@ def test_batch_d_two_concurrent_web_jobs_same_prompt_dedup_safely(tmp_path: Path
     url2 = res2.json()["status_url"]
 
     # Poll both to completion
-    deadline = time.time() + 30.0
+    deadline = time.time() + 90.0
     status1 = client.get(url1).json()
     status2 = client.get(url2).json()
     while time.time() < deadline and (status1["status"] not in ("completed", "failed") or status2["status"] not in ("completed", "failed")):

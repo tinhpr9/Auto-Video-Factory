@@ -24,6 +24,7 @@ class FlowFailureClass(str, Enum):
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
     TIMEOUT = "TIMEOUT"
     DOWNLOAD_FAILED = "DOWNLOAD_FAILED"
+    POLICY_VIOLATION = "POLICY_VIOLATION"
     UNKNOWN = "UNKNOWN"
 
 
@@ -166,6 +167,7 @@ class FlowJobRecord:
     start_image_path: Optional[Path] = None
     client_request_id: Optional[str] = None
     provider_job_id: Optional[str] = None
+    project_id: Optional[str] = None
     status: FlowJobStatus = FlowJobStatus.QUEUED
     attempt_count: int = 0
     created_at: float = field(default_factory=time.time)
@@ -205,6 +207,7 @@ class FlowJobRecord:
             "start_image_path": str(self.start_image_path) if self.start_image_path else None,
             "client_request_id": self.client_request_id,
             "provider_job_id": self.provider_job_id,
+            "project_id": self.project_id,
             "status": self.status.value,
             "attempt_count": self.attempt_count,
             "created_at": self.created_at,
@@ -229,6 +232,7 @@ class FlowJobRecord:
             start_image_path=Path(data["start_image_path"]) if data.get("start_image_path") else None,
             client_request_id=data.get("client_request_id"),
             provider_job_id=data.get("provider_job_id"),
+            project_id=data.get("project_id"),
             status=FlowJobStatus(data.get("status", "QUEUED")),
             attempt_count=data.get("attempt_count", 0),
             created_at=data.get("created_at", time.time()),
