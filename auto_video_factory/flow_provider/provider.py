@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from .android import AndroidCDPManager, ForegroundPolicy
 from .contract import FlowProvider
 from .models import (
     FlowAspectRatio,
@@ -26,6 +27,7 @@ from .models import (
     FlowModel,
     FlowModelInfo,
 )
+
 
 log = logging.getLogger(__name__)
 
@@ -282,6 +284,8 @@ class ProductionFlowProvider(FlowProvider):
         auth_token: Optional[str] = None,
         profile_path: Optional[Path] = None,
         cdp_endpoint: Optional[str] = None,
+        android_manager: Optional[AndroidCDPManager] = None,
+        foreground_policy: Optional[ForegroundPolicy | str] = None,
     ):
         if auth_token is not None:
             raise ValueError(
@@ -303,6 +307,32 @@ class ProductionFlowProvider(FlowProvider):
         self._thread: Optional[threading.Thread] = None
         self._client: Optional[object] = None
         self._lock = threading.RLock()
+
+        # Foreground policy & Android CDP management
+        if foreground_policy is not None:
+            if isinstance(foreground_policy, str):
+                self._foreground_policy = ForegroundPolicy(foreground_policy)
+            else:
+                self._foreground_policy = foreground_policy
+        else:
+            env_pol = os.getenv("FLOW_FOREGROUND_POLICY", "auto").lower()
+            self._foreground_policy = (
+                ForegroundPolicy(env_pol)
+                if env_pol in [p.value for p in ForegroundPolicy]
+                else ForegroundPolicy.AUTO
+            )
+
+        if android_manager is not None:
+            self._android_manager: Optional[AndroidCDPManager] = android_manager
+        elif (
+            os.getenv("FLOW_ANDROID_CDP", "1").lower() in ("1", "true", "yes")
+            and self._cdp_url
+            and any(h in self._cdp_url for h in ("127.0.0.1", "localhost", "9222"))
+        ):
+            self._android_manager = AndroidCDPManager(foreground_policy=self._foreground_policy)
+        else:
+            self._android_manager = None
+
 
     @property
     def _client_cache(self) -> Optional[object]:
@@ -423,6 +453,11 @@ class ProductionFlowProvider(FlowProvider):
         with self._lock:
             if self._client is None:
                 FlowClient, _, _ = self._import_flow()
+                if self._android_manager:
+                    try:
+                        self._android_manager.ensure_cdp_forward()
+                    except Exception as e:
+                        log.debug("Android CDP forward check before client creation: %s", e)
                 resolved_project_id = self._project_id or self._resolved_project_id
                 if not resolved_project_id:
                     try:
@@ -441,6 +476,7 @@ class ProductionFlowProvider(FlowProvider):
                     )
                 )
             return self._client
+
 
     # ── Exception classification ─────────────────────────────────────────────
 
@@ -508,6 +544,11 @@ class ProductionFlowProvider(FlowProvider):
         cdp_valid = False
         cdp_error = None
         if has_cdp:
+            if self._android_manager:
+                try:
+                    self._android_manager.ensure_cdp_forward()
+                except Exception as e:
+                    log.debug("Android CDP manager forward check: %s", e)
             cdp_str = self._cdp_url.strip()
             if any(cdp_str.startswith(prefix) for prefix in ("http://", "https://", "ws://", "wss://", "localhost:", "127.0.0.1:")):
                 cdp_valid = True
@@ -530,6 +571,9 @@ class ProductionFlowProvider(FlowProvider):
             "captcha_bypass_disabled": True,
             "experimental_rpc_disabled": not EXPERIMENTAL_RPC_PROVIDER,
         }
+        if self._android_manager:
+            details["android_cdp"] = True
+            details["foreground_policy"] = self._foreground_policy.value
         if not is_healthy:
             reasons = []
             if has_cdp and not cdp_valid:
@@ -682,15 +726,28 @@ class ProductionFlowProvider(FlowProvider):
             credits_before_obj = self._run(client._api.get_credits())
             credit_before = credits_before_obj.credits
 
-            jobs = self._run(
-                client.generate_video(
-                    prompt=request.prompt,
-                    model=request.model.value,   # e.g. "veo_3_1_t2v_fast_portrait"
-                    aspect=aspect_str,
-                    count=1,
-                    start_image=start_image,
+            def _submit_call():
+                return self._run(
+                    client.generate_video(
+                        prompt=request.prompt,
+                        model=request.model.value,   # e.g. "veo_3_1_t2v_fast_portrait"
+                        aspect=aspect_str,
+                        count=1,
+                        start_image=start_image,
+                    )
                 )
-            )
+
+            if self._android_manager:
+                project_url = (
+                    f"https://labs.google/fx/tools/flow/project/{self._resolved_project_id}"
+                    if self._resolved_project_id
+                    else None
+                )
+                with self._android_manager.scoped_foreground_for_submit(flow_url=project_url):
+                    jobs = _submit_call()
+            else:
+                jobs = _submit_call()
+
 
             if not jobs:
                 return FlowJobResult(

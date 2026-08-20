@@ -147,7 +147,14 @@ def test_3_unhealthy_flow_provider_fails_closed_before_submission(tmp_path: Path
     storage_path = tmp_path / "flow_jobs.json"
     
     # Production provider without session or profile is unhealthy
-    unhealthy_provider = ProductionFlowProvider(auth_token=None, profile_path=None)
+    unhealthy_provider = ProductionFlowProvider()
+    unhealthy_provider.health = lambda: FlowHealthStatus(
+        healthy=False,
+        authenticated=False,
+        profile_exists=False,
+        browser_ready=False,
+        details={"reason": "unauthenticated: missing_auth"},
+    )
     controller = FlowController(
         provider=unhealthy_provider,
         storage_path=storage_path,
@@ -169,6 +176,7 @@ def test_3_unhealthy_flow_provider_fails_closed_before_submission(tmp_path: Path
     # Ensure no jobs were submitted to store
     store = JobStateStore(storage_path)
     assert len(store.list_all_jobs()) == 0
+
 
 
 # ---------------------------------------------------------------------------

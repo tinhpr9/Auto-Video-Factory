@@ -13,6 +13,9 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+
 
 from auto_video_factory.flow_provider.contract import FlowProvider
 from auto_video_factory.flow_provider.controller import FlowController
@@ -332,10 +335,16 @@ def test_batch_f_ambiguous_generating_job_on_restart_marks_ambiguous_no_auto_reg
 # =====================================================================
 
 def test_batch_g_unauthenticated_production_provider_fails_health():
-    prod_provider = ProductionFlowProvider(auth_token=None, profile_path=None)
-    health = prod_provider.health()
+    mock_dir = MagicMock()
+    mock_dir.exists.return_value = False
+    with patch("flow._storage.PROFILE_DIR", mock_dir), \
+         patch("flow._storage.get_active_project", return_value=(None, None)):
+        prod_provider = ProductionFlowProvider(auth_token=None, profile_path=None)
+        health = prod_provider.health()
 
-    assert health.healthy is False
-    assert health.authenticated is False
-    assert health.browser_ready is False
-    assert "missing_auth" in health.details.get("reason", "") or "unauthenticated" in health.details.get("reason", "")
+        assert health.healthy is False
+        assert health.authenticated is False
+        assert health.browser_ready is False
+        assert "missing_auth" in health.details.get("reason", "") or "unauthenticated" in health.details.get("reason", "")
+
+
