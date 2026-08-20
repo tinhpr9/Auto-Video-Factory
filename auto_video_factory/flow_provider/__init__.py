@@ -14,6 +14,8 @@ from .models import (
     FlowJobStatus,
     FlowModel,
     FlowModelInfo,
+    FLOW_MODE_TO_MODEL,
+    FLOW_MODEL_MAP,
 )
 from .persistence import JobStateStore
 from .provider import MockFlowProvider, ProductionFlowProvider
@@ -48,4 +50,6 @@ __all__ = [
     "FlowProviderError",
     "FlowUserInteractionRequiredError",
     "FlowGenerationError",
+    "FLOW_MODE_TO_MODEL",
+    "FLOW_MODEL_MAP",
 ]

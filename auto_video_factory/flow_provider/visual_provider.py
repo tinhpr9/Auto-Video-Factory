@@ -16,8 +16,9 @@ import logging
 import os
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from ..models import Scene
 from .contract import FlowProvider
@@ -29,6 +30,8 @@ from .models import (
     FlowJobResult,
     FlowJobStatus,
     FlowModel,
+    FLOW_MODE_TO_MODEL,
+    FLOW_MODEL_MAP,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,32 +65,41 @@ class FlowVisualProvider:
     def __init__(
         self,
         controller: FlowController,
-        model: FlowModel = FlowModel.VEO_3_1_FAST,
+        model: Optional[Union[FlowModel, str]] = None,
         aspect_ratio: FlowAspectRatio = FlowAspectRatio.PORTRAIT_9_16,
         count: int = 1,
         flow_mode: str = "flow_balanced",
         width: int = 720,
         height: int = 1280,
     ) -> None:
+        if flow_mode not in FLOW_MODE_TO_MODEL:
+            raise ValueError(f"Unknown flow_mode '{flow_mode}'. Must be one of {list(FLOW_MODE_TO_MODEL.keys())}")
+        if isinstance(model, str):
+            if model not in FLOW_MODEL_MAP:
+                raise ValueError(f"Unknown model '{model}'. Must be one of {list(FLOW_MODEL_MAP.keys())}")
+            model = FLOW_MODEL_MAP[model]
         self.controller = controller
-        self.model = model
+        self.flow_mode = flow_mode
+        self.explicit_model = model
+        # Precedence: explicit model override > flow mode routing > default
+        self.model = model if model is not None else FLOW_MODE_TO_MODEL[flow_mode]
         self.aspect_ratio = aspect_ratio
         self.count = count
-        self.flow_mode = flow_mode
         self.width = width
         self.height = height
 
     def _strip_audio_if_present(self, video_path: Path) -> None:
-        """Strip audio streams from generated video clip to ensure zero native audio leakage."""
-        if not video_path.exists() or video_path.stat().st_size < 1024:
-            # Synthetic / test mock MP4 stub without media streams
-            return
-
+        """
+        Strip audio streams from generated video clip to ensure zero native audio leakage.
+        MUST FAIL CLOSED: Never silently pass if audio verification or stripping fails.
+        """
         ffprobe = shutil.which("ffprobe")
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffprobe or not ffmpeg:
-            return
-        
+        if not ffprobe:
+            raise FlowGenerationError(
+                f"ffprobe is required for audio verification of {video_path} but is unavailable.",
+                failure_class=FlowFailureClass.UNKNOWN,
+            )
+
         probe_cmd = [
             ffprobe, "-v", "error",
             "-select_streams", "a",
@@ -96,34 +108,84 @@ class FlowVisualProvider:
             str(video_path),
         ]
         try:
-            probe_res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=15, check=True)
-            data = json.loads(probe_res.stdout)
-            if data.get("streams"):
-                tmp_out = video_path.with_name(f".tmp_no_audio_{video_path.name}")
-                strip_cmd = [
-                    ffmpeg, "-y",
-                    "-i", str(video_path),
-                    "-an",
-                    "-c:v", "copy",
-                    str(tmp_out),
-                ]
-                strip_res = subprocess.run(strip_cmd, capture_output=True, text=True, timeout=30, check=True)
-                if tmp_out.exists() and tmp_out.stat().st_size > 0:
-                    os.replace(tmp_out, video_path)
-                else:
-                    if tmp_out.exists():
-                        tmp_out.unlink(missing_ok=True)
-                    raise FlowGenerationError(
-                        f"Audio stripping failed to produce valid output for {video_path}",
-                        failure_class=FlowFailureClass.UNKNOWN,
-                    )
+            probe_res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=15)
         except Exception as exc:
-            if isinstance(exc, FlowProviderError):
-                raise
             raise FlowGenerationError(
-                f"Failed to verify/strip audio from {video_path}: {exc}",
+                f"ffprobe execution failed for {video_path}: {exc}",
                 failure_class=FlowFailureClass.UNKNOWN,
             ) from exc
+
+        if probe_res.returncode != 0:
+            raise FlowGenerationError(
+                f"ffprobe failed to verify audio streams in {video_path}: {probe_res.stderr.strip()}",
+                failure_class=FlowFailureClass.UNKNOWN,
+            )
+
+        try:
+            data = json.loads(probe_res.stdout)
+        except Exception as exc:
+            raise FlowGenerationError(
+                f"Failed to parse ffprobe json output for {video_path}: {exc}",
+                failure_class=FlowFailureClass.UNKNOWN,
+            ) from exc
+
+        if data.get("streams"):
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise FlowGenerationError(
+                    f"ffmpeg is required for audio stripping of {video_path} but is unavailable.",
+                    failure_class=FlowFailureClass.UNKNOWN,
+                )
+
+            tmp_out = video_path.with_name(f".tmp_no_audio_{uuid.uuid4().hex[:8]}_{video_path.name}")
+            strip_cmd = [
+                ffmpeg, "-y",
+                "-i", str(video_path),
+                "-an",
+                "-c:v", "copy",
+                str(tmp_out),
+            ]
+            try:
+                strip_res = subprocess.run(strip_cmd, capture_output=True, text=True, timeout=30)
+            except Exception as exc:
+                if tmp_out.exists():
+                    tmp_out.unlink(missing_ok=True)
+                raise FlowGenerationError(
+                    f"ffmpeg strip execution failed for {video_path}: {exc}",
+                    failure_class=FlowFailureClass.UNKNOWN,
+                ) from exc
+
+            if strip_res.returncode != 0 or not tmp_out.exists() or tmp_out.stat().st_size == 0:
+                if tmp_out.exists():
+                    tmp_out.unlink(missing_ok=True)
+                raise FlowGenerationError(
+                    f"Audio stripping failed for {video_path}: {strip_res.stderr.strip() if strip_res else 'empty output'}",
+                    failure_class=FlowFailureClass.UNKNOWN,
+                )
+
+            os.replace(tmp_out, video_path)
+
+            # Re-verify that audio streams were completely removed (fail-closed)
+            try:
+                reprobe_res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=15)
+                if reprobe_res.returncode != 0:
+                    raise FlowGenerationError(
+                        f"ffprobe post-strip verification failed for {video_path}: {reprobe_res.stderr.strip()}",
+                        failure_class=FlowFailureClass.UNKNOWN,
+                    )
+                reprobe_data = json.loads(reprobe_res.stdout)
+                if reprobe_data.get("streams"):
+                    raise FlowGenerationError(
+                        f"Audio stripping failed to remove audio streams from {video_path}.",
+                        failure_class=FlowFailureClass.UNKNOWN,
+                    )
+            except Exception as exc:
+                if isinstance(exc, FlowProviderError):
+                    raise
+                raise FlowGenerationError(
+                    f"Post-strip audio verification failed for {video_path}: {exc}",
+                    failure_class=FlowFailureClass.UNKNOWN,
+                ) from exc
 
     def create(self, scene: Scene, output: Path) -> Path:
         """

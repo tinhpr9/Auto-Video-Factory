@@ -253,6 +253,7 @@ def build_factory_for_request(request: WebJobRequest, settings: WebSettings) -> 
             FlowVisualProvider,
             MockFlowProvider,
             ProductionFlowProvider,
+            FLOW_MODEL_MAP,
         )
         storage_path = settings.output_root / "flow_jobs.json"
         scenes_dir = settings.output_root / "scenes"
@@ -270,10 +271,21 @@ def build_factory_for_request(request: WebJobRequest, settings: WebSettings) -> 
             storage_path=storage_path,
             output_dir=scenes_dir,
         )
+        flow_mode = os.getenv("AVF_FLOW_MODE", "flow_balanced")
+        flow_model_str = os.getenv("AVF_FLOW_MODEL")
+        if flow_model_str:
+            if flow_model_str not in FLOW_MODEL_MAP:
+                raise ValueError(
+                    f"Unknown AVF_FLOW_MODEL '{flow_model_str}'. Must be one of {list(FLOW_MODEL_MAP.keys())}"
+                )
+            explicit_model = FLOW_MODEL_MAP[flow_model_str]
+        else:
+            explicit_model = None
         visual_provider = FlowVisualProvider(
             controller=controller,
-            model=FlowModel.VEO_3_1_FAST,
+            model=explicit_model,
             aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+            flow_mode=flow_mode,
             width=720,
             height=1280,
         )

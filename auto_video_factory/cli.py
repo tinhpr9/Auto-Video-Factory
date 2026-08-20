@@ -110,6 +110,7 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
             FlowVisualProvider,
             MockFlowProvider,
             ProductionFlowProvider,
+            FLOW_MODEL_MAP,
         )
         storage_path = Path(args.flow_storage_path) if args.flow_storage_path else Path(args.output) / "flow_jobs.json"
         output_scenes_dir = Path(args.output) / "scenes"
@@ -127,18 +128,10 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
             storage_path=storage_path,
             output_dir=output_scenes_dir,
         )
-        FLOW_MODEL_MAP = {
-            "veo-3.1-fast": FlowModel.VEO_3_1_FAST,
-            "veo-3.1-quality": FlowModel.VEO_3_1_QUALITY,
-            "veo-2.1-fast": FlowModel.VEO_2_1_FAST,
-            FlowModel.VEO_3_1_FAST.value: FlowModel.VEO_3_1_FAST,
-            FlowModel.VEO_3_1_QUALITY.value: FlowModel.VEO_3_1_QUALITY,
-            FlowModel.VEO_2_1_FAST.value: FlowModel.VEO_2_1_FAST,
-        }
-        model_enum = FLOW_MODEL_MAP.get(args.flow_model, FlowModel.VEO_3_1_FAST) if args.flow_model else FlowModel.VEO_3_1_FAST
+        explicit_model = FLOW_MODEL_MAP.get(args.flow_model) if args.flow_model else None
         visual_provider = FlowVisualProvider(
             controller=controller,
-            model=model_enum,
+            model=explicit_model,
             aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
             flow_mode=args.flow_mode,
             width=args.width,
