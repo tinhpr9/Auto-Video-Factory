@@ -230,3 +230,18 @@ class TestProductionFlowProviderAndroidCDP:
             assert res.status == FlowJobStatus.SUBMITTED
             assert res.provider_job_id == "test_media_123"
             mock_scoped.assert_called_once()
+
+    def test_health_fails_closed_when_cdp_forward_fails(self):
+        manager = AndroidCDPManager(foreground_policy=ForegroundPolicy.AUTO)
+        with patch.object(manager, "ensure_cdp_forward", return_value=False):
+            provider = ProductionFlowProvider(
+                project_id="test-proj-uuid",
+                cdp_url="http://127.0.0.1:9222",
+                android_manager=manager,
+            )
+            health = provider.health()
+            assert health.healthy is False
+            assert health.browser_ready is False
+            assert health.authenticated is False
+            assert "android_cdp_forward_failed" in health.details.get("reason", "")
+

@@ -324,14 +324,18 @@ class ProductionFlowProvider(FlowProvider):
 
         if android_manager is not None:
             self._android_manager: Optional[AndroidCDPManager] = android_manager
+        elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("1", "true", "yes"):
+            self._android_manager = AndroidCDPManager(foreground_policy=self._foreground_policy)
         elif (
-            os.getenv("FLOW_ANDROID_CDP", "1").lower() in ("1", "true", "yes")
+            os.getenv("FLOW_ANDROID_CDP") is None
+            and (os.path.exists("/data/data/com.termux") or "ANDROID_ROOT" in os.environ)
             and self._cdp_url
             and any(h in self._cdp_url for h in ("127.0.0.1", "localhost", "9222"))
         ):
             self._android_manager = AndroidCDPManager(foreground_policy=self._foreground_policy)
         else:
             self._android_manager = None
+
 
 
     @property
@@ -544,16 +548,22 @@ class ProductionFlowProvider(FlowProvider):
         cdp_valid = False
         cdp_error = None
         if has_cdp:
-            if self._android_manager:
+            cdp_str = self._cdp_url.strip()
+            if not any(cdp_str.startswith(prefix) for prefix in ("http://", "https://", "ws://", "wss://", "localhost:", "127.0.0.1:")):
+                cdp_error = f"invalid_cdp_url: '{cdp_str}' must start with http://, https://, ws://, or wss://"
+            elif self._android_manager:
                 try:
-                    self._android_manager.ensure_cdp_forward()
+                    forward_ok = self._android_manager.ensure_cdp_forward()
+                    if not forward_ok:
+                        cdp_error = "android_cdp_forward_failed (no connected Android device or port forward failed)"
+                    else:
+                        cdp_valid = True
                 except Exception as e:
                     log.debug("Android CDP manager forward check: %s", e)
-            cdp_str = self._cdp_url.strip()
-            if any(cdp_str.startswith(prefix) for prefix in ("http://", "https://", "ws://", "wss://", "localhost:", "127.0.0.1:")):
-                cdp_valid = True
+                    cdp_error = f"android_cdp_forward_error: {e}"
             else:
-                cdp_error = f"invalid_cdp_url: '{cdp_str}' must start with http://, https://, ws://, or wss://"
+                cdp_valid = True
+
 
         if has_cdp:
             browser_ready = cdp_valid
