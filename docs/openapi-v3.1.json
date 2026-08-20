@@ -233,7 +233,8 @@
           "provider": {
             "enum": [
               "offline",
-              "openai"
+              "openai",
+              "flow"
             ],
             "title": "Provider",
             "type": "string"

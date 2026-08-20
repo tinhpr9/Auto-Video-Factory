@@ -88,7 +88,7 @@ class FlowController:
 
     def submit(
         self,
-        prompt: str,
+        prompt: str | FlowGenerationRequest,
         model: FlowModel = FlowModel.VEO_3_1_FAST,
         aspect_ratio: FlowAspectRatio = FlowAspectRatio.PORTRAIT_9_16,
         count: int = 1,
@@ -100,17 +100,21 @@ class FlowController:
         Submit a new generation request. Deduplicates active requests with identical prompt hash,
         and strictly rejects custom job_id collisions for differing requests.
         """
-        assigned_id = job_id or f"flow_{uuid.uuid4().hex[:12]}"
-        req = FlowGenerationRequest(
-            job_id=assigned_id,
-            prompt=prompt,
-            model=model,
-            aspect_ratio=aspect_ratio,
-            count=count,
-            output_dir=self.output_dir,
-            priority=priority,
-            start_image_path=start_image_path,
-        )
+        if isinstance(prompt, FlowGenerationRequest):
+            req = prompt
+            assigned_id = req.job_id
+        else:
+            assigned_id = job_id or f"flow_{uuid.uuid4().hex[:12]}"
+            req = FlowGenerationRequest(
+                job_id=assigned_id,
+                prompt=prompt,
+                model=model,
+                aspect_ratio=aspect_ratio,
+                count=count,
+                output_dir=self.output_dir,
+                priority=priority,
+                start_image_path=start_image_path,
+            )
 
         with self._mutex:
             # 1. Custom job_id collision check
@@ -123,17 +127,206 @@ class FlowController:
                     f"Job ID collision: '{assigned_id}' already exists with a different request specification."
                 )
 
-            # 2. Duplicate active request check
+            # 2. Duplicate completed request check (cache reuse if artifacts exist)
+            existing_completed = self.store.get_completed_job_by_prompt_hash(req.prompt_hash)
+            if existing_completed is not None:
+                valid_files = [f for f in existing_completed.output_paths if f.exists() and f.is_file() and f.stat().st_size > 0]
+                if valid_files:
+                    log.info("Reusing completed job %s for prompt hash %s", existing_completed.job_id, req.prompt_hash)
+                    return existing_completed.job_id
+
+            # 3. Duplicate active request check
             existing_active = self.store.get_active_job_by_prompt_hash(req.prompt_hash)
             if existing_active is not None:
                 log.info("Deduplicated request %s (matches active job %s)", assigned_id, existing_active.job_id)
                 return existing_active.job_id
 
-            # 3. Persist and enqueue
+            # 4. Persist and enqueue
             record = FlowJobRecord.from_request(req, provider="flow")
             self.store.save_job(record)
             self.queue.push(req)
             return assigned_id
+
+    def process_job(self, job_id: str) -> Optional[FlowJobResult]:
+        """
+        Process or await the specific job identified by job_id to terminal completion.
+        1. Reuses completed persisted job if valid output artifacts exist on disk.
+        2. Polls and monitors in-flight job with provider_job_id without re-invoking generate_video().
+        3. Executes and retries generation if in QUEUED/RETRY_WAIT, bounded by retry_policy.
+        """
+        # Multi-thread coordination loop
+        while True:
+            record = self.store.get_job(job_id)
+            if not record:
+                return None
+
+            # 1. Reuse existing completed artifact if valid
+            if record.status == FlowJobStatus.COMPLETED:
+                valid_files = [f for f in record.output_paths if f.exists() and f.is_file() and f.stat().st_size > 0]
+                if valid_files:
+                    return FlowJobResult(
+                        job_id=record.job_id,
+                        provider_job_id=record.provider_job_id or "",
+                        status=FlowJobStatus.COMPLETED,
+                        output_files=valid_files,
+                    )
+                return FlowJobResult(
+                    job_id=record.job_id,
+                    provider_job_id=record.provider_job_id or "",
+                    status=FlowJobStatus.FAILED,
+                    failure_class=FlowFailureClass.DOWNLOAD_FAILED,
+                    failure_message="Completed job artifact is missing or empty on disk",
+                )
+
+            # 2. Terminal failures on disk
+            if record.status in (FlowJobStatus.FAILED, FlowJobStatus.USER_INTERACTION_REQUIRED):
+                return FlowJobResult(
+                    job_id=record.job_id,
+                    provider_job_id=record.provider_job_id or "",
+                    status=record.status,
+                    failure_class=record.failure_class,
+                    failure_message=record.failure_message,
+                )
+
+            # 3. Already in-flight with provider_job_id -> poll to completion without re-generating
+            if record.provider_job_id:
+                return self._poll_and_resolve_job(
+                    record=record,
+                    provider_job_id=record.provider_job_id,
+                    start_time=record.created_at,
+                )
+
+            # 4. Atomically claim generation rights for this job
+            with self._mutex:
+                locked_record = self.store.get_job(job_id)
+                if not locked_record:
+                    return None
+                if locked_record.status == FlowJobStatus.COMPLETED or locked_record.provider_job_id:
+                    continue
+                if locked_record.status == FlowJobStatus.GENERATING:
+                    # Another thread is actively calling generate_video; wait for it
+                    is_generator = False
+                else:
+                    # Designate this thread as the generator
+                    locked_record.status = FlowJobStatus.GENERATING
+                    locked_record.updated_at = time.time()
+                    self.store.save_job(locked_record)
+                    self.queue.pop_job(job_id)
+                    record = locked_record
+                    is_generator = True
+
+            if not is_generator:
+                time.sleep(0.05)
+                continue
+
+            # We are the generator thread for this job
+            break
+
+        req = FlowGenerationRequest(
+            job_id=record.job_id,
+            prompt=record.prompt,
+            model=FlowModel(record.model),
+            aspect_ratio=FlowAspectRatio(record.aspect_ratio),
+            count=record.count,
+            output_dir=self.output_dir,
+            priority=record.priority,
+            start_image_path=record.start_image_path,
+            client_request_id=record.client_request_id,
+        )
+
+        while True:
+            if self._is_safety_paused():
+                log.warning("FlowController safety pause active")
+                return FlowJobResult(
+                    job_id=req.job_id,
+                    provider_job_id="",
+                    status=FlowJobStatus.USER_INTERACTION_REQUIRED,
+                    failure_class=FlowFailureClass.USER_INTERACTION_REQUIRED,
+                    failure_message="FlowController safety pause active",
+                )
+
+            # Rate limiter wait
+            if not self.rate_limiter.wait_and_acquire(timeout_s=5.0):
+                log.warning("Rate limit capacity not available for job %s, retrying after delay", req.job_id)
+                time.sleep(1.0)
+                continue
+
+            if self._is_safety_paused():
+                return FlowJobResult(
+                    job_id=req.job_id,
+                    provider_job_id="",
+                    status=FlowJobStatus.USER_INTERACTION_REQUIRED,
+                    failure_class=FlowFailureClass.USER_INTERACTION_REQUIRED,
+                    failure_message="FlowController safety pause active",
+                )
+
+            start_time = time.time()
+            record.attempt_count += 1
+            record.status = FlowJobStatus.GENERATING
+            record.updated_at = time.time()
+            self.store.save_job(record)
+
+            try:
+                res = self.provider.generate_video(req)
+            except Exception as exc:
+                log.exception("Provider exception for %s: %s", req.job_id, exc)
+                failure_cls = FlowFailureClass.NETWORK if isinstance(exc, (ConnectionError, TimeoutError)) else FlowFailureClass.UNKNOWN
+                res = FlowJobResult(
+                    job_id=req.job_id,
+                    provider_job_id="",
+                    status=FlowJobStatus.FAILED,
+                    failure_class=failure_cls,
+                    failure_message=f"Provider exception: {exc}",
+                )
+
+            if res.status == FlowJobStatus.USER_INTERACTION_REQUIRED or res.failure_class == FlowFailureClass.USER_INTERACTION_REQUIRED:
+                log.error("USER_INTERACTION_REQUIRED for job %s. Halting automation.", req.job_id)
+                with self._mutex:
+                    self.is_paused = True
+                record.status = FlowJobStatus.USER_INTERACTION_REQUIRED
+                record.failure_class = FlowFailureClass.USER_INTERACTION_REQUIRED
+                record.failure_message = res.failure_message or "User interaction required"
+                record.updated_at = time.time()
+                self.store.save_job(record)
+                return res
+
+            if res.status == FlowJobStatus.FAILED:
+                if self.retry_policy.should_retry(res.failure_class, record.attempt_count):
+                    delay = self.retry_policy.get_delay(record.attempt_count)
+                    log.info("Scheduling retry %d for job %s after %.2fs", record.attempt_count, req.job_id, delay)
+                    record.status = FlowJobStatus.RETRY_WAIT
+                    record.failure_class = res.failure_class
+                    record.failure_message = res.failure_message
+                    record.updated_at = time.time()
+                    self.store.save_job(record)
+
+                    time.sleep(delay)
+                    record.status = FlowJobStatus.QUEUED
+                    record.updated_at = time.time()
+                    self.store.save_job(record)
+                    continue
+                else:
+                    record.status = FlowJobStatus.FAILED
+                    record.failure_class = res.failure_class or FlowFailureClass.UNKNOWN
+                    record.failure_message = res.failure_message
+                    record.updated_at = time.time()
+                    self.store.save_job(record)
+                    return res
+
+            # SUBMITTED / PENDING -> Poll loop until terminal state
+            provider_job_id = res.provider_job_id
+            record.provider_job_id = provider_job_id
+            record.status = FlowJobStatus.PENDING
+            record.updated_at = time.time()
+            self.store.save_job(record)
+
+            return self._poll_and_resolve_job(
+                record=record,
+                provider_job_id=provider_job_id,
+                start_time=start_time,
+                credit_before=res.credit_before,
+                credit_after=res.credit_after,
+            )
 
     def process_next(self) -> Optional[FlowJobResult]:
         """
@@ -274,6 +467,20 @@ class FlowController:
             if self._is_safety_paused():
                 log.warning("Safety pause encountered during polling loop for job %s", record.job_id)
                 return None
+
+            # Check if another thread/worker already resolved this job to COMPLETED in the store
+            current_record = self.store.get_job(record.job_id)
+            if current_record and current_record.status == FlowJobStatus.COMPLETED:
+                valid_files = [f for f in current_record.output_paths if f.exists() and f.is_file() and f.stat().st_size > 0]
+                if valid_files:
+                    return FlowJobResult(
+                        job_id=current_record.job_id,
+                        provider_job_id=current_record.provider_job_id,
+                        status=FlowJobStatus.COMPLETED,
+                        output_files=valid_files,
+                        credit_before=credit_before,
+                        credit_after=credit_after,
+                    )
 
             try:
                 polled_res = self.provider.poll(provider_job_id)
@@ -422,7 +629,7 @@ class FlowController:
                     job.updated_at = time.time()
                     self.store.save_job(job)
 
-            elif job.status in (FlowJobStatus.PENDING, FlowJobStatus.GENERATING) and job.provider_job_id:
+            elif job.status in (FlowJobStatus.SUBMITTED, FlowJobStatus.PENDING, FlowJobStatus.GENERATING) and job.provider_job_id:
                 log.info("Resuming active job %s (provider_job_id: %s)", job.job_id, job.provider_job_id)
                 resolved = self._poll_and_resolve_job(
                     record=job,

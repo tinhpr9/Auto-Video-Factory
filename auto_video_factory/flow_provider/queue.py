@@ -39,6 +39,17 @@ class JobQueue:
             _, _, request = heapq.heappop(self._heap)
             return request
 
+    def pop_job(self, job_id: str) -> Optional[FlowGenerationRequest]:
+        """Extract and return a specific job from the queue if present, maintaining heap invariant."""
+        with self._lock:
+            for idx, entry in enumerate(self._heap):
+                if entry[2].job_id == job_id:
+                    req = entry[2]
+                    self._heap.pop(idx)
+                    heapq.heapify(self._heap)
+                    return req
+            return None
+
     def peek(self) -> Optional[FlowGenerationRequest]:
         with self._lock:
             if not self._heap:

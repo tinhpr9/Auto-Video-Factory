@@ -58,9 +58,10 @@ class VideoFactory:
         cursor = 0.0
         scene_total = max(1, len(plan.scenes))
         for position, scene in enumerate(plan.scenes, start=1):
-            image = scene_dir / f"scene-{scene.index:02d}.png"
+            media_path = scene_dir / f"scene-{scene.index:02d}.png"
             audio = scene_dir / f"scene-{scene.index:02d}.wav"
-            self.image_provider.create(scene, image)
+            created_media = self.image_provider.create(scene, media_path)
+            actual_media = created_media if isinstance(created_media, Path) and created_media.exists() else media_path
             self.tts.synthesize(scene.narration, audio)
             duration = media_duration(audio)
             timings.append(
@@ -72,7 +73,7 @@ class VideoFactory:
                 )
             )
             cursor += duration
-            images.append(image)
+            images.append(actual_media)
             audios.append(audio)
             percent = 12 + round(68 * position / scene_total)
             report(percent, f"Đang tạo cảnh {position}/{scene_total}")

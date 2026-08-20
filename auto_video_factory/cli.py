@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -38,14 +39,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--provider",
-        choices=("offline", "openai"),
+        choices=("offline", "openai", "flow"),
         default="offline",
-        help="offline is free/local; openai enables AI script, image and TTS providers",
+        help="offline is free/local; openai enables AI script, image and TTS; flow uses Google Flow video provider",
     )
 
     # Offline provider controls.
     parser.add_argument("--voice", default="vi", help="offline eSpeak voice/language")
     parser.add_argument("--speed", type=int, default=165, help="offline eSpeak words per minute")
+
+    # Flow provider controls.
+    parser.add_argument(
+        "--flow-mode",
+        choices=("flow_balanced", "flow_economy", "flow_quality"),
+        default="flow_balanced",
+        help="Flow model routing mode",
+    )
+    parser.add_argument(
+        "--flow-model",
+        choices=("veo-3.1-fast", "veo-3.1-quality", "veo-2.1-fast"),
+        default=None,
+        help="Explicit Flow model override",
+    )
+    parser.add_argument(
+        "--flow-storage-path",
+        default=None,
+        help="Path to flow jobs persistence JSON (default: <output>/flow_jobs.json)",
+    )
+    parser.add_argument(
+        "--flow-mock",
+        action="store_true",
+        default=False,
+        help="Use MockFlowProvider instead of ProductionFlowProvider (zero paid credit spend)",
+    )
 
     # OpenAI provider controls. Secrets are read only from OPENAI_API_KEY.
     parser.add_argument("--script-model", default="gpt-5-mini")
@@ -73,6 +99,48 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
             planner=TemplateStoryPlanner(scene_count=scenes),
             tts=EspeakTTS(language=args.voice, speed=args.speed),
             image_provider=CardImageProvider(width=args.width, height=args.height),
+            renderer=renderer,
+        )
+
+    if args.provider == "flow":
+        from .flow_provider import (
+            FlowAspectRatio,
+            FlowController,
+            FlowModel,
+            FlowVisualProvider,
+            MockFlowProvider,
+            ProductionFlowProvider,
+            FLOW_MODEL_MAP,
+        )
+        storage_path = Path(args.flow_storage_path) if args.flow_storage_path else Path(args.output) / "flow_jobs.json"
+        output_scenes_dir = Path(args.output) / "scenes"
+        if args.flow_mock or os.getenv("AVF_FLOW_MOCK", "").lower() in ("1", "true", "yes"):
+            prov = MockFlowProvider(initial_credits=200)
+        else:
+            session_token = os.getenv("FLOW_SESSION_TOKEN")
+            profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+            prov = ProductionFlowProvider(
+                auth_token=session_token,
+                profile_path=Path(profile_path) if profile_path else None,
+            )
+        controller = FlowController(
+            provider=prov,
+            storage_path=storage_path,
+            output_dir=output_scenes_dir,
+        )
+        explicit_model = FLOW_MODEL_MAP.get(args.flow_model) if args.flow_model else None
+        visual_provider = FlowVisualProvider(
+            controller=controller,
+            model=explicit_model,
+            aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+            flow_mode=args.flow_mode,
+            width=args.width,
+            height=args.height,
+        )
+        return VideoFactory(
+            planner=TemplateStoryPlanner(scene_count=scenes),
+            tts=EspeakTTS(language=args.voice, speed=args.speed),
+            image_provider=visual_provider,
             renderer=renderer,
         )
 
@@ -116,6 +184,8 @@ def main() -> int:
         if isinstance(exc, ProviderError):
             error["code"] = exc.code
             error["retryable"] = exc.retryable
+        elif hasattr(exc, "failure_class") and getattr(exc, "failure_class") is not None:
+            error["code"] = getattr(exc, "failure_class").value
         print(json.dumps(error, ensure_ascii=False), file=sys.stderr)
         return 2
 

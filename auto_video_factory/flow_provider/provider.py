@@ -4,6 +4,9 @@ Concrete implementations of FlowProvider: MockFlowProvider and ProductionFlowPro
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -54,6 +57,7 @@ class MockFlowProvider(FlowProvider):
         self.consumed_credits = 0
         self.simulate_failure = simulate_failure
         self.simulate_latency_s = simulate_latency_s
+        self.generate_video_calls = 0
 
     def health(self) -> FlowHealthStatus:
         return FlowHealthStatus(
@@ -98,6 +102,7 @@ class MockFlowProvider(FlowProvider):
         ]
 
     def generate_video(self, request: FlowGenerationRequest) -> FlowJobResult:
+        self.generate_video_calls += 1
         if self.simulate_latency_s > 0:
             time.sleep(self.simulate_latency_s)
 
@@ -186,11 +191,27 @@ class MockFlowProvider(FlowProvider):
 
         count = job.get("count", 1) if job else 1
         paths = []
+        ffmpeg_bin = shutil.which("ffmpeg")
         for i in range(count):
             suffix = f"_{i}" if count > 1 else ""
             out_file = output_dir / f"{provider_job_id}{suffix}.mp4"
-            # Write synthetic MP4 header
-            out_file.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+            if out_file.exists() and out_file.stat().st_size > 0:
+                paths.append(out_file)
+                continue
+            tmp_file = out_file.with_name(f".tmp_{uuid.uuid4().hex[:8]}_{out_file.name}")
+            if ffmpeg_bin:
+                subprocess.run(
+                    [
+                        ffmpeg_bin, "-y", "-f", "lavfi", "-i", "color=c=black:s=720x1280:d=0.1:r=10",
+                        "-preset", "ultrafast", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", "0.1", str(tmp_file)
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=30,
+                )
+            if not tmp_file.exists() or tmp_file.stat().st_size == 0:
+                tmp_file.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+            os.replace(tmp_file, out_file)
             paths.append(out_file)
         return paths
 

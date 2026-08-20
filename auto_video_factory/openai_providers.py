@@ -9,9 +9,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
-
-from PIL import Image, ImageOps
+try:
+    from PIL import Image, ImageOps
+except ImportError:
+    Image = None
+    ImageOps = None
 
 from .models import Scene, StoryPlan
 from .prompts import build_story_prompt
@@ -270,6 +272,8 @@ class OpenAIImageProvider:
         encoded = data[0].get("b64_json")
         if not isinstance(encoded, str) or not encoded:
             raise ProviderResponseError("image provider response is missing b64_json")
+        if Image is None or ImageOps is None:
+            raise ProviderError("Pillow is required for OpenAIImageProvider.", code="DEPENDENCY_MISSING")
         try:
             raw = base64.b64decode(encoded, validate=True)
             with Image.open(io.BytesIO(raw)) as source:

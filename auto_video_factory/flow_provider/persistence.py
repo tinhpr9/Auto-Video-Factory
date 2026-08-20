@@ -172,6 +172,19 @@ class JobStateStore:
             finally:
                 self._release_file_lock()
 
+    def get_completed_job_by_prompt_hash(self, prompt_hash: str) -> Optional[FlowJobRecord]:
+        """Find completed job with the same prompt hash."""
+        with self._lock:
+            self._acquire_file_lock()
+            try:
+                self._reload_from_disk_unlocked()
+                for job in self._jobs.values():
+                    if job.prompt_hash == prompt_hash and job.status == FlowJobStatus.COMPLETED:
+                        return job
+                return None
+            finally:
+                self._release_file_lock()
+
     def list_all_jobs(self) -> list[FlowJobRecord]:
         with self._lock:
             self._acquire_file_lock()
@@ -180,3 +193,5 @@ class JobStateStore:
                 return list(self._jobs.values())
             finally:
                 self._release_file_lock()
+
+    list_jobs = list_all_jobs

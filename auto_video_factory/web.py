@@ -33,7 +33,7 @@ from .presets import DURATION_TO_SCENES, STYLE_OPTIONS, VOICE_OPTIONS
 
 @dataclass(frozen=True)
 class WebSettings:
-    provider: Literal["offline", "openai"] = "offline"
+    provider: Literal["offline", "openai", "flow"] = "offline"
     output_root: Path = Path("output/web")
     max_workers: int = 1
     host: str = "0.0.0.0"
@@ -42,12 +42,13 @@ class WebSettings:
     session_ttl_seconds: int = 12 * 60 * 60
     auth_attempts_per_minute: int = 5
     max_jobs_per_hour: int = 12
+    flow_mock: bool = False
 
     @classmethod
     def from_env(cls) -> "WebSettings":
         provider = os.getenv("AVF_PROVIDER", "offline").strip().lower()
-        if provider not in {"offline", "openai"}:
-            raise ValueError("AVF_PROVIDER must be offline or openai")
+        if provider not in {"offline", "openai", "flow"}:
+            raise ValueError("AVF_PROVIDER must be offline, openai, or flow")
         max_workers = int(os.getenv("AVF_MAX_WORKERS", "1"))
         if not 1 <= max_workers <= 4:
             raise ValueError("AVF_MAX_WORKERS must be between 1 and 4")
@@ -59,8 +60,9 @@ class WebSettings:
             access_code = access_code.strip()
             if len(access_code) < 12:
                 raise ValueError("AVF_ACCESS_CODE must be at least 12 characters")
-        if provider == "openai" and not access_code:
-            raise ValueError("AVF_ACCESS_CODE is required when AVF_PROVIDER=openai")
+        flow_mock = os.getenv("AVF_FLOW_MOCK", "").strip().lower() in ("1", "true", "yes")
+        if (provider == "openai" or (provider == "flow" and not flow_mock)) and not access_code:
+            raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={provider}")
         session_ttl_seconds = int(os.getenv("AVF_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
         auth_attempts_per_minute = int(os.getenv("AVF_AUTH_ATTEMPTS_PER_MINUTE", "5"))
         max_jobs_per_hour = int(os.getenv("AVF_MAX_JOBS_PER_HOUR", "12"))
@@ -80,6 +82,7 @@ class WebSettings:
             session_ttl_seconds=session_ttl_seconds,
             auth_attempts_per_minute=auth_attempts_per_minute,
             max_jobs_per_hour=max_jobs_per_hour,
+            flow_mock=flow_mock,
         )
 
 
@@ -214,7 +217,7 @@ class ConfigOption(BaseModel):
 
 
 class WebConfig(BaseModel):
-    provider: Literal["offline", "openai"]
+    provider: Literal["offline", "openai", "flow"]
     durations: list[int]
     voices: list[ConfigOption]
     styles: list[ConfigOption]
@@ -234,7 +237,11 @@ class _JobRecord:
 FactoryBuilder = Callable[[WebJobRequest], VideoFactory]
 
 
-def build_factory_for_request(request: WebJobRequest, settings: WebSettings) -> VideoFactory:
+def build_factory_for_request(
+    request: WebJobRequest,
+    settings: WebSettings,
+    controller: Optional["FlowController"] = None,
+) -> VideoFactory:
     scenes = DURATION_TO_SCENES[request.duration_seconds]
     renderer = FFmpegRenderer(width=720, height=1280, fps=30)
     if settings.provider == "offline":
@@ -242,6 +249,58 @@ def build_factory_for_request(request: WebJobRequest, settings: WebSettings) -> 
             planner=TemplateStoryPlanner(scene_count=scenes),
             tts=EspeakTTS(language="vi", speed=175),
             image_provider=CardImageProvider(width=720, height=1280),
+            renderer=renderer,
+        )
+
+    if settings.provider == "flow":
+        from .flow_provider import (
+            FlowAspectRatio,
+            FlowController,
+            FlowModel,
+            FlowVisualProvider,
+            MockFlowProvider,
+            ProductionFlowProvider,
+            FLOW_MODEL_MAP,
+        )
+        if controller is None:
+            storage_path = settings.output_root / "flow_jobs.json"
+            scenes_dir = settings.output_root / "scenes"
+            if settings.flow_mock:
+                prov = MockFlowProvider(initial_credits=200)
+            else:
+                session_token = os.getenv("FLOW_SESSION_TOKEN")
+                profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+                prov = ProductionFlowProvider(
+                    auth_token=session_token,
+                    profile_path=Path(profile_path) if profile_path else None,
+                )
+            controller = FlowController(
+                provider=prov,
+                storage_path=storage_path,
+                output_dir=scenes_dir,
+            )
+        flow_mode = os.getenv("AVF_FLOW_MODE", "flow_balanced")
+        flow_model_str = os.getenv("AVF_FLOW_MODEL")
+        if flow_model_str:
+            if flow_model_str not in FLOW_MODEL_MAP:
+                raise ValueError(
+                    f"Unknown AVF_FLOW_MODEL '{flow_model_str}'. Must be one of {list(FLOW_MODEL_MAP.keys())}"
+                )
+            explicit_model = FLOW_MODEL_MAP[flow_model_str]
+        else:
+            explicit_model = None
+        visual_provider = FlowVisualProvider(
+            controller=controller,
+            model=explicit_model,
+            aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+            flow_mode=flow_mode,
+            width=720,
+            height=1280,
+        )
+        return VideoFactory(
+            planner=TemplateStoryPlanner(scene_count=scenes),
+            tts=EspeakTTS(language="vi", speed=175),
+            image_provider=visual_provider,
             renderer=renderer,
         )
 
@@ -366,9 +425,34 @@ def create_app(
     resolved = settings or WebSettings.from_env()
     if resolved.access_code is not None and len(resolved.access_code) < 12:
         raise ValueError("AVF_ACCESS_CODE must be at least 12 characters")
-    if resolved.provider == "openai" and not resolved.access_code:
-        raise ValueError("AVF_ACCESS_CODE is required when AVF_PROVIDER=openai")
-    builder = factory_builder or (lambda request: build_factory_for_request(request, resolved))
+    if (resolved.provider == "openai" or (resolved.provider == "flow" and not resolved.flow_mock)) and not resolved.access_code:
+        raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={resolved.provider}")
+
+    shared_flow_controller = None
+    if resolved.provider == "flow":
+        from .flow_provider import (
+            FlowController,
+            MockFlowProvider,
+            ProductionFlowProvider,
+        )
+        storage_path = resolved.output_root / "flow_jobs.json"
+        scenes_dir = resolved.output_root / "scenes"
+        if resolved.flow_mock:
+            prov = MockFlowProvider(initial_credits=200)
+        else:
+            session_token = os.getenv("FLOW_SESSION_TOKEN")
+            profile_path = os.getenv("FLOW_BROWSER_PROFILE")
+            prov = ProductionFlowProvider(
+                auth_token=session_token,
+                profile_path=Path(profile_path) if profile_path else None,
+            )
+        shared_flow_controller = FlowController(
+            provider=prov,
+            storage_path=storage_path,
+            output_dir=scenes_dir,
+        )
+
+    builder = factory_builder or (lambda request: build_factory_for_request(request, resolved, controller=shared_flow_controller))
     manager = JobManager(resolved, builder)
     sessions = SessionManager(resolved)
     bearer_scheme = HTTPBearer(auto_error=False)

@@ -55,6 +55,22 @@ class FlowModel(str, Enum):
     VEO_2_1_FAST = "veo_2_1_fast_d_15_t2v"
 
 
+FLOW_MODE_TO_MODEL: dict[str, FlowModel] = {
+    "flow_quality": FlowModel.VEO_3_1_QUALITY,
+    "flow_economy": FlowModel.VEO_2_1_FAST,
+    "flow_balanced": FlowModel.VEO_3_1_FAST,
+}
+
+FLOW_MODEL_MAP: dict[str, FlowModel] = {
+    "veo-3.1-fast": FlowModel.VEO_3_1_FAST,
+    "veo-3.1-quality": FlowModel.VEO_3_1_QUALITY,
+    "veo-2.1-fast": FlowModel.VEO_2_1_FAST,
+    FlowModel.VEO_3_1_FAST.value: FlowModel.VEO_3_1_FAST,
+    FlowModel.VEO_3_1_QUALITY.value: FlowModel.VEO_3_1_QUALITY,
+    FlowModel.VEO_2_1_FAST.value: FlowModel.VEO_2_1_FAST,
+}
+
+
 @dataclass
 class FlowModelInfo:
     """Metadata describing a Flow model and its resource cost."""
