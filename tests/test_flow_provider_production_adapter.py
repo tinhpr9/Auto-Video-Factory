@@ -33,6 +33,7 @@ from auto_video_factory.flow_provider.models import (
     FlowAspectRatio,
     FlowFailureClass,
     FlowGenerationRequest,
+    FlowJobRecord,
     FlowJobResult,
     FlowJobStatus,
     FlowModel,
@@ -59,6 +60,31 @@ def test_upstream_constants_locked():
     assert "veo-automation-extension" not in ProductionFlowProvider.UPSTREAM_REPO
 
 
+def test_provenance_pin_matches_pyproject_toml_dynamically():
+    """
+    Provenance drift test: parses pyproject.toml directly and compares against
+    ProductionFlowProvider constants to prevent drift between dependency declaration and runtime metadata.
+    """
+    pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    assert pyproject_path.exists(), f"Missing pyproject.toml at {pyproject_path}"
+    content = pyproject_path.read_text(encoding="utf-8")
+
+    # Extract prod dependency line
+    assert "eddie-fqh/flow-py.git@" in content
+    # Extract git commit SHA from pyproject.toml
+    import re
+    match = re.search(r"eddie-fqh/flow-py\.git@([0-9a-f]{40})", content)
+    assert match is not None, "Could not find pinned flow-py git commit in pyproject.toml"
+    declared_sha = match.group(1)
+
+    assert declared_sha == "bd01679304d6fccc4c96fea3b33151c2e9e836f4"
+    assert ProductionFlowProvider.UPSTREAM_COMMIT == declared_sha
+
+    # Verify research-only repos are not in runtime/optional dependencies
+    assert "google-flow-cli" not in content.replace("# DO NOT substitute google-flow-cli, veo3tool, or veo-automation-extension.", "")
+    assert "veo3tool" not in content.replace("# DO NOT substitute google-flow-cli, veo3tool, or veo-automation-extension.", "")
+
+
 def test_experimental_rpc_provider_is_false():
     """EXPERIMENTAL_RPC_PROVIDER must remain False at module level."""
     assert EXPERIMENTAL_RPC_PROVIDER is False
@@ -82,13 +108,21 @@ def test_constructor_new_args():
     assert p._cdp_url == "http://127.0.0.1:9222"
 
 
-def test_constructor_legacy_kwargs_accepted_without_crash():
-    """Legacy kwargs (auth_token, profile_path, cdp_endpoint) must not break callers."""
-    p = ProductionFlowProvider(
-        auth_token="token_abc",
-        profile_path=Path("/tmp/profile"),
-        cdp_endpoint="http://127.0.0.1:9222",
-    )
+def test_constructor_rejects_legacy_auth_token_deterministically():
+    """Supplied auth_token must be rejected deterministically rather than silently ignored."""
+    with pytest.raises(ValueError, match="auth_token"):
+        ProductionFlowProvider(auth_token="legacy_token_123")
+
+
+def test_constructor_rejects_legacy_profile_path_deterministically():
+    """Supplied profile_path must be rejected deterministically rather than silently ignored."""
+    with pytest.raises(ValueError, match="profile_path"):
+        ProductionFlowProvider(profile_path=Path("/tmp/legacy_profile"))
+
+
+def test_constructor_cdp_endpoint_alias():
+    """cdp_endpoint alias is preserved for compatibility."""
+    p = ProductionFlowProvider(cdp_endpoint="http://127.0.0.1:9222")
     assert p._cdp_url == "http://127.0.0.1:9222"
 
 
@@ -364,7 +398,7 @@ def test_classify_auth_and_session_errors():
 def test_classify_timeout_and_policy_errors():
     mod = _make_stub_exc_module()
     assert ProductionFlowProvider._classify_exception(mod.GenerationTimeout(60), mod) == FlowFailureClass.TIMEOUT
-    assert ProductionFlowProvider._classify_exception(mod.PolicyError("bad content"), mod) == FlowFailureClass.USER_INTERACTION_REQUIRED
+    assert ProductionFlowProvider._classify_exception(mod.PolicyError("bad content"), mod) == FlowFailureClass.POLICY_VIOLATION
 
 
 def test_classify_ui_and_not_found_errors():
@@ -681,7 +715,7 @@ def test_generate_video_success_with_fake_client():
     )
 
 
-def test_generate_video_maps_policy_error_to_user_interaction_required():
+def test_generate_video_maps_policy_error_to_policy_violation():
     fake_client = _FakeFlowClient()
     exc_mod = _make_stub_exc_module()
     fake_client.generate_video.side_effect = exc_mod.PolicyError("Sensitive keywords")
@@ -699,7 +733,7 @@ def test_generate_video_maps_policy_error_to_user_interaction_required():
         res = p.generate_video(req)
 
     assert res.status == FlowJobStatus.FAILED
-    assert res.failure_class == FlowFailureClass.USER_INTERACTION_REQUIRED
+    assert res.failure_class == FlowFailureClass.POLICY_VIOLATION
     assert "content policy" in (res.failure_message or "").lower()
 
 
@@ -843,3 +877,270 @@ def test_flow_controller_end_to_end_with_fake_production_provider(tmp_path: Path
         assert len(paths) == 1
         assert paths[0].exists()
         assert rec.output_paths == [str(p) for p in paths] or [Path(p) for p in rec.output_paths] == paths
+
+
+def test_finding_b_preserve_project_identity_and_restart(tmp_path: Path):
+    """
+    Finding B: Upstream project_id must be durable across submit, poll, download,
+    and controller/provider restart without losing the active project context.
+    """
+    fake_client = _FakeFlowClient()
+    flow_mod, exc_mod, video_job_cls = _setup_fake_flow_env(fake_client)
+
+    async def _fake_download(fife_url, output_path):
+        out = Path(output_path)
+        out.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00fake_video")
+        return str(out)
+
+    fake_client.download = AsyncMock(side_effect=_fake_download)
+
+    # Submission session: project_id not given to provider constructor, but flow-py returns project_id in job
+    p1 = ProductionFlowProvider()
+    db_file = tmp_path / "flow_jobs.json"
+
+    with patch.object(p1, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        p1._client_cache = fake_client
+
+        controller1 = FlowController(
+            provider=p1,
+            storage_path=db_file,
+            output_dir=tmp_path / "scenes",
+        )
+
+        req = FlowGenerationRequest(
+            job_id="job_restart_proj",
+            prompt="A misty bamboo forest",
+            model=FlowModel.VEO_3_1_FAST,
+            count=1,
+            output_dir=tmp_path / "scenes",
+        )
+
+        res_sub = p1.generate_video(req)
+        assert res_sub.status == FlowJobStatus.SUBMITTED
+        assert res_sub.runtime_evidence.get("project_id") == "proj_1"
+
+        # Durably save pending job in controller store with the upstream project_id
+        rec1 = FlowJobRecord.from_request(req)
+        rec1.provider_job_id = res_sub.provider_job_id
+        rec1.project_id = res_sub.runtime_evidence.get("project_id")
+        rec1.status = FlowJobStatus.PENDING
+        controller1.store.save_job(rec1)
+
+        saved_rec = controller1.get_job_status("job_restart_proj")
+        assert saved_rec is not None
+        assert saved_rec.project_id == "proj_1"
+
+    # Restart session: new controller and new provider instance loaded from storage
+    p2 = ProductionFlowProvider()
+    with patch.object(p2, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        p2._client_cache = fake_client
+
+        controller2 = FlowController(
+            provider=p2,
+            storage_path=db_file,
+            output_dir=tmp_path / "scenes",
+        )
+
+        # Now upstream completes
+        fake_client._api.wait_for_video.return_value = _FakeVideoStatus(
+            media_name="media_proj_test", complete=True, fife_url="https://lh3.google.com/proj_video.mp4"
+        )
+
+        resumed = controller2.resume_pending_jobs()
+        assert len(resumed) == 1
+        assert resumed[0].status == FlowJobStatus.COMPLETED
+
+        rec2 = controller2.get_job_status("job_restart_proj")
+        assert rec2 is not None
+        assert rec2.status == FlowJobStatus.COMPLETED
+        assert rec2.project_id == "proj_1"
+
+
+def test_finding_c_policy_rejection_does_not_pause_unrelated_jobs(tmp_path: Path):
+    """
+    Finding C: PolicyError on one job must fail terminally with POLICY_VIOLATION
+    without pausing the controller or blocking the next unrelated job in the queue.
+    """
+    fake_client = _FakeFlowClient()
+    exc_mod = _make_stub_exc_module()
+    flow_mod, _, video_job_cls = _setup_fake_flow_env(fake_client, exc_mod)
+
+    async def _fake_download(fife_url, output_path):
+        out = Path(output_path)
+        out.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00fake_video")
+        return str(out)
+
+    fake_client.download = AsyncMock(side_effect=_fake_download)
+
+    p = ProductionFlowProvider()
+    with patch.object(p, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        p._client_cache = fake_client
+
+        controller = FlowController(
+            provider=p,
+            storage_path=tmp_path / "flow_jobs.json",
+            output_dir=tmp_path / "scenes",
+        )
+
+        # Job 1: Triggers PolicyError
+        fake_client.generate_video.side_effect = exc_mod.PolicyError("Content policy violation")
+        req1 = FlowGenerationRequest(
+            job_id="job_policy_violating",
+            prompt="Violating content prompt",
+            count=1,
+            output_dir=tmp_path / "scenes",
+        )
+        controller.submit(req1)
+
+        # Job 2: Valid prompt
+        req2 = FlowGenerationRequest(
+            job_id="job_valid_next",
+            prompt="Peaceful golden temple at sunrise",
+            count=1,
+            output_dir=tmp_path / "scenes",
+        )
+        controller.submit(req2)
+
+        # Process Job 1 -> Fails with POLICY_VIOLATION
+        res1 = controller.process_next()
+        assert res1 is not None
+        assert res1.job_id == "job_policy_violating"
+        assert res1.status == FlowJobStatus.FAILED
+        assert res1.failure_class == FlowFailureClass.POLICY_VIOLATION
+
+        # Crucial check: Controller MUST NOT be paused!
+        assert controller.is_paused is False
+
+        # Reset generate_video for Job 2
+        fake_client.generate_video.side_effect = None
+        fake_client._api.wait_for_video.return_value = _FakeVideoStatus(
+            media_name="media_valid_2", complete=True, fife_url="https://lh3.google.com/valid.mp4"
+        )
+
+        # Process Job 2 -> Succeeds
+        res2 = controller.process_next()
+        assert res2 is not None
+        assert res2.job_id == "job_valid_next"
+        assert res2.status == FlowJobStatus.COMPLETED
+
+
+def test_finding_d_download_auth_error_triggers_safety_pause(tmp_path: Path):
+    """
+    Finding D: Auth/UI error during download must be classified as USER_INTERACTION_REQUIRED
+    and trigger a controller safety pause rather than falling back to DOWNLOAD_FAILED.
+    """
+    fake_client = _FakeFlowClient()
+    exc_mod = _make_stub_exc_module()
+    flow_mod, _, video_job_cls = _setup_fake_flow_env(fake_client, exc_mod)
+
+    # Upstream poll reports complete, but download raises NotLoggedInError
+    fake_client._api.wait_for_video.return_value = _FakeVideoStatus(
+        media_name="media_auth_dl", complete=True, fife_url="https://lh3.google.com/auth_fail.mp4"
+    )
+    fake_client.download.side_effect = exc_mod.NotLoggedInError("Session expired during download")
+
+    p = ProductionFlowProvider()
+    with patch.object(p, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        p._client_cache = fake_client
+
+        controller = FlowController(
+            provider=p,
+            storage_path=tmp_path / "flow_jobs.json",
+            output_dir=tmp_path / "scenes",
+        )
+
+        req = FlowGenerationRequest(
+            job_id="job_auth_dl",
+            prompt="A warrior looking at the horizon",
+            count=1,
+            output_dir=tmp_path / "scenes",
+        )
+        controller.submit(req)
+
+        res = controller.process_next()
+        assert res is not None
+        assert res.status == FlowJobStatus.USER_INTERACTION_REQUIRED
+        assert res.failure_class == FlowFailureClass.USER_INTERACTION_REQUIRED
+        assert controller.is_paused is True
+
+        rec = controller.get_job_status("job_auth_dl")
+        assert rec is not None
+        assert rec.status == FlowJobStatus.USER_INTERACTION_REQUIRED
+
+
+def test_finding_d_download_corrupt_artifact_triggers_download_failed_without_pause(tmp_path: Path):
+    """
+    Finding D: Ordinary corrupt/zero-byte artifact during download must produce
+    DOWNLOAD_FAILED without triggering the safety pause.
+    """
+    fake_client = _FakeFlowClient()
+    flow_mod, exc_mod, video_job_cls = _setup_fake_flow_env(fake_client)
+
+    # Download creates 0-byte file
+    async def _fake_download_zero_byte(fife_url, output_path):
+        out = Path(output_path)
+        out.write_bytes(b"")
+        return str(out)
+
+    fake_client.download = AsyncMock(side_effect=_fake_download_zero_byte)
+    fake_client._api.wait_for_video.return_value = _FakeVideoStatus(
+        media_name="media_corrupt_dl", complete=True, fife_url="https://lh3.google.com/corrupt.mp4"
+    )
+
+    p = ProductionFlowProvider()
+    with patch.object(p, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        p._client_cache = fake_client
+
+        controller = FlowController(
+            provider=p,
+            storage_path=tmp_path / "flow_jobs.json",
+            output_dir=tmp_path / "scenes",
+        )
+
+        req = FlowGenerationRequest(
+            job_id="job_corrupt_dl",
+            prompt="A mountain lake at dusk",
+            count=1,
+            output_dir=tmp_path / "scenes",
+        )
+        controller.submit(req)
+
+        res = controller.process_next()
+        assert res is not None
+        assert res.status == FlowJobStatus.FAILED
+        assert res.failure_class == FlowFailureClass.DOWNLOAD_FAILED
+        assert controller.is_paused is False
+
+
+def test_finding_a_cli_and_web_production_config_wiring(monkeypatch, tmp_path: Path):
+    """
+    Finding A: CLI and web must pass explicit supported configuration
+    (FLOW_PROJECT_ID, FLOW_CDP_URL) to ProductionFlowProvider rather than obsolete arguments.
+    """
+    from auto_video_factory.cli import build_factory_from_args, build_parser
+    from auto_video_factory.web import WebJobRequest, WebSettings, build_factory_for_request
+
+    monkeypatch.setenv("FLOW_PROJECT_ID", "test_proj_env_123")
+    monkeypatch.setenv("FLOW_CDP_URL", "http://127.0.0.1:9222")
+
+    # 1. CLI build
+    parser = build_parser()
+    args = parser.parse_args(["--topic", "ancient legends", "--provider", "flow", "--output", str(tmp_path)])
+    factory = build_factory_from_args(args)
+    # The visual_provider has a controller whose provider is ProductionFlowProvider
+    flow_prov = factory.image_provider.controller.provider
+    assert isinstance(flow_prov, ProductionFlowProvider)
+    assert flow_prov._project_id == "test_proj_env_123"
+    assert flow_prov._cdp_url == "http://127.0.0.1:9222"
+
+    # 2. Web build
+    settings = WebSettings(output_root=tmp_path, flow_mock=False, provider="flow")
+    req = WebJobRequest(topic="ancient legends", duration_seconds=45)
+    web_factory = build_factory_for_request(
+        request=req,
+        settings=settings,
+    )
+    web_flow_prov = web_factory.image_provider.controller.provider
+    assert isinstance(web_flow_prov, ProductionFlowProvider)
+    assert web_flow_prov._project_id == "test_proj_env_123"
+    assert web_flow_prov._cdp_url == "http://127.0.0.1:9222"

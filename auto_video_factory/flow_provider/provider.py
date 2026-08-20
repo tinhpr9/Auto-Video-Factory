@@ -279,12 +279,24 @@ class ProductionFlowProvider(FlowProvider):
         project_id: Optional[str] = None,
         cdp_url: Optional[str] = None,
         headless: bool = True,
-        # Legacy compat — ignored; kept so existing instantiation code doesn't break
         auth_token: Optional[str] = None,
         profile_path: Optional[Path] = None,
         cdp_endpoint: Optional[str] = None,
     ):
+        if auth_token is not None:
+            raise ValueError(
+                "ProductionFlowProvider does not accept 'auth_token'. "
+                "flow-py uses Playwright session storage ('flow login') or CDP. "
+                "Remove auth_token or configure FLOW_CDP_URL."
+            )
+        if profile_path is not None:
+            raise ValueError(
+                "ProductionFlowProvider does not accept 'profile_path'. "
+                "flow-py uses default profile storage in ~/.flow-py/ or CDP endpoint. "
+                "Remove profile_path or configure FLOW_CDP_URL."
+            )
         self._project_id = project_id
+        self._resolved_project_id: Optional[str] = project_id
         self._cdp_url    = cdp_url or cdp_endpoint
         self._headless   = headless
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -411,9 +423,19 @@ class ProductionFlowProvider(FlowProvider):
         with self._lock:
             if self._client is None:
                 FlowClient, _, _ = self._import_flow()
+                resolved_project_id = self._project_id or self._resolved_project_id
+                if not resolved_project_id:
+                    try:
+                        from flow._storage import get_active_project  # noqa: PLC0415
+                        saved_proj, _ = get_active_project()
+                        if saved_proj:
+                            resolved_project_id = saved_proj
+                            self._resolved_project_id = saved_proj
+                    except Exception:
+                        pass
                 self._client = self._run(
                     FlowClient.create(
-                        project_id=self._project_id,
+                        project_id=resolved_project_id,
                         headless=self._headless,
                         cdp_url=self._cdp_url,
                     )
@@ -430,7 +452,7 @@ class ProductionFlowProvider(FlowProvider):
         if isinstance(exc, flow_exc.GenerationTimeout):
             return FlowFailureClass.TIMEOUT
         if isinstance(exc, flow_exc.PolicyError):
-            return FlowFailureClass.USER_INTERACTION_REQUIRED
+            return FlowFailureClass.POLICY_VIOLATION
         if isinstance(exc, flow_exc.UIError):
             return FlowFailureClass.UI_CHANGED
         if isinstance(exc, flow_exc.NotFoundError):
@@ -680,6 +702,8 @@ class ProductionFlowProvider(FlowProvider):
                 )
 
             job = jobs[0]
+            if getattr(job, "project_id", None):
+                self._resolved_project_id = job.project_id
             # media_name is the stable upstream job identifier used for poll+download
             provider_job_id = job.media_name or job.workflow_id
 
@@ -712,7 +736,7 @@ class ProductionFlowProvider(FlowProvider):
                 job_id=request.job_id,
                 provider_job_id="",
                 status=FlowJobStatus.FAILED,
-                failure_class=FlowFailureClass.USER_INTERACTION_REQUIRED,
+                failure_class=FlowFailureClass.POLICY_VIOLATION,
                 failure_message=f"Prompt rejected by Google content policy: {exc}",
             )
         except flow_exc.GenerationTimeout as exc:
@@ -748,11 +772,22 @@ class ProductionFlowProvider(FlowProvider):
         try:
             client = self._get_client()
 
+            # Resolve active project id if not explicitly passed
+            proj = self._project_id or self._resolved_project_id
+            if not proj:
+                try:
+                    from flow._storage import get_active_project  # noqa: PLC0415
+                    saved_proj, _ = get_active_project()
+                    if saved_proj:
+                        proj = saved_proj
+                except Exception:
+                    pass
+
             # flow-py poll: batchCheckAsyncVideoGenerationStatus
             dummy_job = VideoJob.__new__(VideoJob)
             dummy_job._raw = {}
             dummy_job.media_name = provider_job_id
-            dummy_job.project_id = self._project_id or ""
+            dummy_job.project_id = proj or ""
             dummy_job.workflow_id = ""
 
             status = self._run(client._api.wait_for_video(
@@ -814,7 +849,8 @@ class ProductionFlowProvider(FlowProvider):
         Download a completed video by its media_name.
 
         Uses FlowClient.download(fife_url, output_path) from flow-py.
-        Returns empty list on any failure (controller treats this as DOWNLOAD_FAILED).
+        Preserves AuthError, NotLoggedInError, UIError by raising them so the controller
+        can activate safety pause; returns empty list on ordinary file failures.
         """
         _, flow_exc, VideoJob = self._import_flow()
         output_dir = Path(output_dir)
@@ -823,11 +859,21 @@ class ProductionFlowProvider(FlowProvider):
         try:
             client = self._get_client()
 
+            proj = self._project_id or self._resolved_project_id
+            if not proj:
+                try:
+                    from flow._storage import get_active_project  # noqa: PLC0415
+                    saved_proj, _ = get_active_project()
+                    if saved_proj:
+                        proj = saved_proj
+                except Exception:
+                    pass
+
             # Resolve fife_url via a single-poll status check
             dummy_job = VideoJob.__new__(VideoJob)
             dummy_job._raw = {}
             dummy_job.media_name = provider_job_id
-            dummy_job.project_id = self._project_id or ""
+            dummy_job.project_id = proj or ""
             dummy_job.workflow_id = ""
 
             status = self._run(client._api.wait_for_video(
@@ -851,6 +897,9 @@ class ProductionFlowProvider(FlowProvider):
             os.replace(str(downloaded), out_file)
             return [out_file]
 
+        except (flow_exc.AuthError, flow_exc.NotLoggedInError, flow_exc.UIError) as exc:
+            log.error("USER_INTERACTION_REQUIRED during download for %s: %s", provider_job_id, exc)
+            raise
         except Exception as exc:
             log.exception("download failed for provider_job_id=%s: %s", provider_job_id, exc)
             return []
