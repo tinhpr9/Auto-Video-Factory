@@ -78,11 +78,30 @@ class VideoFactory:
             percent = 12 + round(68 * position / scene_total)
             report(percent, f"Đang tạo cảnh {position}/{scene_total}")
 
+        # Validate all clips before rendering
+        if len(images) != len(plan.scenes) or len(audios) != len(plan.scenes):
+            raise ValueError(f"Scene count mismatch: expected {len(plan.scenes)}, got {len(images)} images and {len(audios)} audios")
+
+        seen_indices = set()
+        for scene in plan.scenes:
+            if scene.index in seen_indices:
+                raise ValueError(f"Duplicate scene index detected: {scene.index}")
+            seen_indices.add(scene.index)
+
+        for idx, (img, aud) in enumerate(zip(images, audios), start=1):
+            if not img.exists() or not img.is_file() or img.stat().st_size == 0:
+                raise RuntimeError(f"Invalid visual media for scene {idx}: {img} (missing or empty)")
+            if not aud.exists() or not aud.is_file() or aud.stat().st_size == 0:
+                raise RuntimeError(f"Invalid audio for scene {idx}: {aud} (missing or empty)")
+
         subtitles = job_dir / "captions.srt"
         caption_timings = [caption for timing in timings for caption in captionize_scene(timing)]
         subtitles.write_text(build_srt(caption_timings), encoding="utf-8")
         report(84, "Đang render video")
         video = job_dir / "video.mp4"
         self.renderer.render(images, audios, subtitles, video)
+        if not video.exists() or video.stat().st_size == 0:
+            raise RuntimeError(f"Rendered video missing or empty: {video}")
         report(100, "Hoàn tất")
         return GenerationResult(video=video, subtitles=subtitles, timings=timings, plan=plan)
+
