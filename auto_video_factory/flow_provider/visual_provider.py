@@ -78,6 +78,8 @@ class FlowVisualProvider:
             if model not in FLOW_MODEL_MAP:
                 raise ValueError(f"Unknown model '{model}'. Must be one of {list(FLOW_MODEL_MAP.keys())}")
             model = FLOW_MODEL_MAP[model]
+        if count != 1:
+            raise ValueError(f"FlowVisualProvider only supports count=1 for single-scene visual generation, got count={count}")
         self.controller = controller
         self.flow_mode = flow_mode
         self.explicit_model = model
@@ -223,12 +225,18 @@ class FlowVisualProvider:
         )
 
         # 4. Submit to controller
-        self.controller.submit(req)
+        submitted_job_id = self.controller.submit(req)
 
-        # 5. Process next job in queue
-        result = self.controller.process_next()
+        # 5. Process specifically the submitted job ID
+        result = self.controller.process_job(submitted_job_id)
         if result is None:
-            raise FlowProviderError("No job was processed by FlowController.")
+            raise FlowProviderError(f"No job record found for job_id '{submitted_job_id}'.")
+
+        if result.job_id != submitted_job_id:
+            raise FlowGenerationError(
+                f"Job ID mismatch: expected {submitted_job_id}, got {result.job_id}",
+                failure_class=FlowFailureClass.UNKNOWN,
+            )
 
         # 6. Check result status
         if result.status == FlowJobStatus.USER_INTERACTION_REQUIRED:

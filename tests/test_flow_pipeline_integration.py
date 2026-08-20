@@ -366,7 +366,7 @@ def test_8_existing_pipeline_regression_remains_green(tmp_path: Path):
     from fastapi.testclient import TestClient
     from auto_video_factory.web import WebSettings, create_app
     
-    settings_flow = WebSettings(provider="flow", output_root=tmp_path / "web_flow", max_workers=1)
+    settings_flow = WebSettings(provider="flow", output_root=tmp_path / "web_flow", max_workers=1, flow_mock=True)
     os.environ["AVF_FLOW_MOCK"] = "1"
     try:
         app = create_app(settings=settings_flow)
