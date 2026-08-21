@@ -15,6 +15,7 @@ from auto_video_factory.flow_provider.models import (
     FlowModel,
     FLOW_MODE_TO_MODEL,
     FLOW_MODEL_MAP,
+    resolve_flow_model,
 )
 from auto_video_factory.flow_provider.visual_provider import FlowVisualProvider
 from auto_video_factory.flow_provider.controller import FlowController
@@ -27,7 +28,7 @@ def main() -> int:
     flow_mode = vars_.get("flow_mode", "flow_balanced")
     flow_model_arg = vars_.get("flow_model")
 
-    explicit_model = FLOW_MODEL_MAP.get(flow_model_arg) if flow_model_arg else None
+    explicit_model = resolve_flow_model(flow_model_arg) if flow_model_arg else None
 
     tmp_dir = Path(tempfile.gettempdir())
     mock_prov = MockFlowProvider(initial_credits=500)

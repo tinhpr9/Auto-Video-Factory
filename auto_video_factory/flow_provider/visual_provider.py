@@ -32,6 +32,7 @@ from .models import (
     FlowModel,
     FLOW_MODE_TO_MODEL,
     FLOW_MODEL_MAP,
+    resolve_flow_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,8 @@ class FlowGenerationError(FlowProviderError):
 
 class FlowVisualProvider:
     """
-    Visual provider backed by Google Flow Controller.
-    Implements the pipeline's ImageProvider / VisualProvider protocol:
-        create(scene: Scene, output: Path) -> Path
+    Image/video provider adapter implementing the pipeline ImageProvider interface.
+    Delegates generation jobs to FlowController.
     """
 
     def __init__(
@@ -74,10 +74,8 @@ class FlowVisualProvider:
     ) -> None:
         if flow_mode not in FLOW_MODE_TO_MODEL:
             raise ValueError(f"Unknown flow_mode '{flow_mode}'. Must be one of {list(FLOW_MODE_TO_MODEL.keys())}")
-        if isinstance(model, str):
-            if model not in FLOW_MODEL_MAP:
-                raise ValueError(f"Unknown model '{model}'. Must be one of {list(FLOW_MODEL_MAP.keys())}")
-            model = FLOW_MODEL_MAP[model]
+        if model is not None:
+            model = resolve_flow_model(model)
         if count != 1:
             raise ValueError(f"FlowVisualProvider only supports count=1 for single-scene visual generation, got count={count}")
         self.controller = controller

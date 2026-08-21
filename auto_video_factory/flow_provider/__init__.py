@@ -17,6 +17,7 @@ from .models import (
     FlowModelInfo,
     FLOW_MODE_TO_MODEL,
     FLOW_MODEL_MAP,
+    resolve_flow_model,
 )
 from .persistence import JobStateStore
 from .provider import MockFlowProvider, ProductionFlowProvider
@@ -55,5 +56,6 @@ __all__ = [
     "FlowGenerationError",
     "FLOW_MODE_TO_MODEL",
     "FLOW_MODEL_MAP",
+    "resolve_flow_model",
 ]
 

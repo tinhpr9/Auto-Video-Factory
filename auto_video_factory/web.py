@@ -291,6 +291,7 @@ def build_factory_for_request(
             MockFlowProvider,
             ProductionFlowProvider,
             FLOW_MODEL_MAP,
+            resolve_flow_model,
         )
         if controller is None:
             storage_path = settings.output_root / "flow_jobs.json"
@@ -311,14 +312,7 @@ def build_factory_for_request(
             )
         flow_mode = os.getenv("AVF_FLOW_MODE", "flow_balanced")
         flow_model_str = os.getenv("AVF_FLOW_MODEL")
-        if flow_model_str:
-            if flow_model_str not in FLOW_MODEL_MAP:
-                raise ValueError(
-                    f"Unknown AVF_FLOW_MODEL '{flow_model_str}'. Must be one of {list(FLOW_MODEL_MAP.keys())}"
-                )
-            explicit_model = FLOW_MODEL_MAP[flow_model_str]
-        else:
-            explicit_model = None
+        explicit_model = resolve_flow_model(flow_model_str) if flow_model_str else None
         visual_provider = FlowVisualProvider(
             controller=controller,
             model=explicit_model,
