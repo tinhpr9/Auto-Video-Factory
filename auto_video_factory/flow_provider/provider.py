@@ -689,9 +689,106 @@ class ProductionFlowProvider(FlowProvider):
                 "Cannot confirm aspect before generation. Requires user interaction."
             )
 
+        orig_fill_prompt = ui.fill_prompt
+
+        async def robust_fill_prompt(page, prompt: str) -> bool:
+            """
+            Mobile-safe prompt fill.
+
+            scroll_into_view_if_needed and text_content timeout over Android Chrome CDP.
+            Use pure JS execCommand as primary path, fall back to upstream logic.
+            """
+            try:
+                result = await page.evaluate("""
+                    (prompt) => {
+                        const els = [...document.querySelectorAll("div[contenteditable], [role='textbox']")];
+                        const el = els.find(e => e.offsetWidth > 0 && e.offsetHeight > 0 && e.getBoundingClientRect().y > 100);
+                        if (!el) return {ok: false, reason: 'no visible element'};
+                        el.focus();
+                        el.click();
+                        document.execCommand('selectAll');
+                        document.execCommand('delete');
+                        document.execCommand('insertText', false, prompt);
+                        return {ok: true, text: el.textContent};
+                    }
+                """, prompt)
+                if result and result.get("ok"):
+                    # verify prompt was inserted
+                    text = result.get("text", "")
+                    if prompt[:10] in text:
+                        log.debug("robust_fill_prompt: JS execCommand succeeded")
+                        return True
+                    # text may include placeholder — try once more
+                    result2 = await page.evaluate("""
+                        (prompt) => {
+                            const els = [...document.querySelectorAll("div[contenteditable], [role='textbox']")];
+                            const el = els.find(e => e.offsetWidth > 0 && e.offsetHeight > 0 && e.getBoundingClientRect().y > 100);
+                            if (!el) return null;
+                            el.focus();
+                            el.click();
+                            document.execCommand('selectAll');
+                            document.execCommand('delete');
+                            document.execCommand('insertText', false, prompt);
+                            return el.textContent;
+                        }
+                    """, prompt)
+                    if result2 and prompt[:10] in result2:
+                        return True
+            except Exception as e:
+                log.debug("robust_fill_prompt: JS approach failed (%s), trying upstream", e)
+
+            # Fallback to upstream (handles non-Android cases)
+            try:
+                return await orig_fill_prompt(page, prompt)
+            except Exception as e2:
+                log.warning("robust_fill_prompt: upstream also failed: %s", e2)
+                return False
+
+        async def robust_click_submit(page) -> bool:
+            """
+            Mobile-safe submit. Uses JS event dispatch as primary path (avoids Playwright click timeouts).
+            """
+            try:
+                clicked = await page.evaluate("""
+                    () => {
+                        const btns = [...document.querySelectorAll('button')];
+                        // find the arrow_forward submit button (rightmost/last generate button)
+                        const submit = btns.find(b => {
+                            const t = (b.textContent || '').toLowerCase();
+                            return t.includes('mũi tên tiến') || t.includes('arrow_forward');
+                        }) || btns.find(b => {
+                            const t = (b.textContent || '').toLowerCase();
+                            return (t.includes('tạo') || t.includes('create')) && !b.disabled;
+                        });
+                        if (submit) {
+                            submit.dispatchEvent(new MouseEvent('pointerdown', {bubbles: true}));
+                            submit.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                            submit.dispatchEvent(new MouseEvent('pointerup', {bubbles: true}));
+                            submit.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                            submit.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                            return submit.textContent;
+                        }
+                        return null;
+                    }
+                """)
+                if clicked:
+                    log.debug("robust_click_submit: clicked via JS dispatch (%s)", clicked)
+                    return True
+            except Exception as e:
+                log.debug("robust_click_submit: JS dispatch failed (%s), trying upstream", e)
+
+            # Fallback to upstream click_submit
+            try:
+                return await ui.click_submit.__wrapped__(page) if hasattr(ui.click_submit, "__wrapped__") else False
+            except Exception:
+                pass
+            return False
+
         ui.open_settings_panel = robust_open_settings_panel
         ui.switch_mode = robust_switch_mode
         ui.set_aspect_ratio = robust_set_aspect_ratio
+        ui.fill_prompt = robust_fill_prompt
+        ui.click_submit = robust_click_submit
         ui._is_hardened = True
 
 
