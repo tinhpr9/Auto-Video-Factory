@@ -296,6 +296,7 @@ class ProductionFlowProvider(FlowProvider):
         cdp_endpoint: Optional[str] = None,
         android_manager: Optional[AndroidCDPManager] = None,
         foreground_policy: Optional[ForegroundPolicy | str] = None,
+        backend: Optional[str] = None,
     ):
         if auth_token is not None:
             raise ValueError(
@@ -332,9 +333,30 @@ class ProductionFlowProvider(FlowProvider):
                 else ForegroundPolicy.AUTO
             )
 
+        # Backend selection (Priority: explicit backend argument > AVF_BROWSER_BACKEND env > FLOW_ANDROID_CDP env)
+        backend_val = (backend or os.getenv("AVF_BROWSER_BACKEND", "")).lower().strip()
+        if backend_val in ("android_chrome", "android", "adb_chrome"):
+            self._backend = "android_chrome"
+        elif backend_val in ("native", "native_chromium", "termux"):
+            self._backend = "native"
+        elif backend_val in ("adb", "legacy_adb"):
+            self._backend = "adb"
+        elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("1", "true", "yes"):
+            self._backend = "android_chrome"
+        elif android_manager is not None:
+            self._backend = "android_chrome"
+        else:
+            self._backend = "native"
+
         if android_manager is not None:
             self._android_manager: Optional[AndroidCDPManager] = android_manager
-        elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("1", "true", "yes"):
+        elif self._backend == "android_chrome":
+            cdp_port = int(os.getenv("FLOW_CDP_PORT", "9222"))
+            self._android_manager = AndroidCDPManager(
+                cdp_port=cdp_port,
+                foreground_policy=self._foreground_policy,
+            )
+        elif self._backend == "adb":
             self._android_manager = AndroidCDPManager(foreground_policy=self._foreground_policy)
         else:
             self._android_manager = None
@@ -642,16 +664,19 @@ class ProductionFlowProvider(FlowProvider):
             has_project = bool(self._project_id)
 
         # CDP configuration validation
-        has_cdp = bool(self._cdp_url and self._cdp_url.strip())
+        has_cdp = bool(self._cdp_url and self._cdp_url.strip()) or (self._android_manager is not None)
         cdp_valid = False
         cdp_error = None
         cdp_owner = None
         if has_cdp:
+            if not self._cdp_url:
+                cdp_port = getattr(self._android_manager, "cdp_port", 9222) if self._android_manager else 9222
+                self._cdp_url = f"http://127.0.0.1:{cdp_port}"
             cdp_str = self._cdp_url.strip()
             if not any(cdp_str.startswith(prefix) for prefix in ("http://", "https://", "ws://", "wss://", "localhost:", "127.0.0.1:")):
                 cdp_error = f"invalid_cdp_url: '{cdp_str}' must start with http://, https://, ws://, or wss://"
             elif self._android_manager:
-                cdp_owner = "ANDROID_ADB"
+                cdp_owner = "ANDROID_CHROME_CDP" if self._backend == "android_chrome" else "ANDROID_ADB"
                 try:
                     forward_ok = self._android_manager.ensure_cdp_forward()
                     if not forward_ok:
@@ -680,6 +705,7 @@ class ProductionFlowProvider(FlowProvider):
 
         details: dict = {
             "provider_type": "production",
+            "backend": self._backend,
             "upstream": self.UPSTREAM_REPO,
             "upstream_commit": self.UPSTREAM_COMMIT,
             "captcha_bypass_disabled": True,
@@ -690,6 +716,8 @@ class ProductionFlowProvider(FlowProvider):
         if self._android_manager:
             details["android_cdp"] = True
             details["foreground_policy"] = self._foreground_policy.value
+            if not cdp_valid and not self._android_manager.is_adb_connected():
+                details["user_interaction_required"] = "ANDROID_WIRELESS_DEBUG_PAIRING"
         elif has_cdp:
             details["android_cdp"] = False
         if not is_healthy:

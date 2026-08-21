@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import ipaddress
 import logging
 import os
 import re
+import subprocess
 import time
 from typing import Iterator, Optional, Tuple
 
@@ -58,6 +60,42 @@ class CDPTransportMode(str, enum.Enum):
     LOCAL_ADB_TCP = "local_adb_tcp"
     WIRELESS_ADB = "wireless_adb"
     USER_INTERACTION_REQUIRED = "user_interaction_required"
+
+
+def discover_mdns_wireless_endpoints() -> list[str]:
+    """
+    Auto-discover Android Wireless Debugging connect endpoints using `adb mdns services`.
+    Looks for services with type `_adb-tls-connect._tcp` or `_adb._tcp`.
+    Validates IPv4 and port range (1-65535).
+    Returns list of discovered 'IP:port' strings.
+    """
+    endpoints: list[str] = []
+    try:
+        res = subprocess.run(
+            ["adb", "mdns", "services"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.splitlines():
+                if "_adb-tls-connect._tcp" in line or "_adb._tcp" in line:
+                    parts = line.strip().split()
+                    for part in parts:
+                        if ":" in part:
+                            host_str, port_str = part.rsplit(":", 1)
+                            try:
+                                ipaddress.IPv4Address(host_str)
+                                port_num = int(port_str)
+                                if 1 <= port_num <= 65535:
+                                    if part not in endpoints:
+                                        endpoints.append(part)
+                            except Exception:
+                                continue
+    except Exception as e:
+        log.debug("mDNS discovery failed: %s", e)
+    return endpoints
 
 
 def discover_device_devtools_socket(device) -> str:
@@ -258,6 +296,8 @@ class LocalAdbTcpTransport(CDPTransport):
 class WirelessAdbTransport(CDPTransport):
     """
     Standard Wireless Debugging / USB ADB transport over Wi-Fi or USB.
+    Supports dynamic auto-discovery of endpoints via mDNS, deterministic device selection,
+    and automatic stale forward recovery.
     """
     mode = CDPTransportMode.WIRELESS_ADB
 
@@ -280,17 +320,79 @@ class WirelessAdbTransport(CDPTransport):
             self._client = adbutils.AdbClient(host=self.adb_host, port=self.adb_port)
         return self._client
 
-    def _get_device(self):
+    def _attempt_auto_connect(self) -> Optional[object]:
+        """Attempt to auto-connect to configured or discovered wireless debugging endpoints."""
+        try:
+            client = self._get_client()
+            # 1. If explicit serial is provided, only connect to that serial (fail closed if not reachable)
+            if self.serial:
+                try:
+                    res = client.connect(self.serial)
+                    if "connected" in str(res).lower():
+                        dev = client.device(serial=self.serial)
+                        dev.shell("echo ping")
+                        return dev
+                except Exception:
+                    pass
+                return None
+
+            # 2. Check ANDROID_WIRELESS_ENDPOINT env var
+            env_ep = os.getenv("ANDROID_WIRELESS_ENDPOINT")
+            if env_ep:
+                try:
+                    res = client.connect(env_ep)
+                    if "connected" in str(res).lower():
+                        dev = client.device(serial=env_ep)
+                        dev.shell("echo ping")
+                        return dev
+                except Exception:
+                    pass
+
+            # 3. Auto-discover endpoints via mDNS services (fail closed if ambiguous)
+            endpoints = discover_mdns_wireless_endpoints()
+            if len(endpoints) > 1:
+                log.error(
+                    "Multiple mDNS wireless ADB endpoints discovered (%s) with no explicit serial configured. "
+                    "Failing closed to prevent ambiguous routing.",
+                    endpoints,
+                )
+                return None
+            if len(endpoints) == 1:
+                ep = endpoints[0]
+                try:
+                    res = client.connect(ep)
+                    if "connected" in str(res).lower():
+                        dev = client.device(serial=ep)
+                        dev.shell("echo ping")
+                        return dev
+                except Exception as e:
+                    log.debug("Auto-connect to %s failed: %s", ep, e)
+        except Exception as e:
+            log.debug("Auto-connect attempt failed: %s", e)
+        return None
+
+    def _get_device(self, auto_connect: bool = False):
         try:
             client = self._get_client()
             if self.serial:
-                return client.device(serial=self.serial)
+                try:
+                    dev = client.device(serial=self.serial)
+                    # Verify device is responsive
+                    dev.shell("echo ping")
+                    return dev
+                except Exception:
+                    return self._attempt_auto_connect() if auto_connect else None
+
             devices = [
                 d for d in client.device_list()
                 if not d.serial.startswith("127.0.0.1:")
             ]
             if len(devices) == 1:
-                return devices[0]
+                try:
+                    devices[0].shell("echo ping")
+                    return devices[0]
+                except Exception:
+                    return self._attempt_auto_connect() if auto_connect else None
             if len(devices) > 1:
                 log.error(
                     "Multiple wireless/USB ADB devices connected (%s) with no explicit serial configured. "
@@ -298,17 +400,20 @@ class WirelessAdbTransport(CDPTransport):
                     [d.serial for d in devices],
                 )
                 return None
-            return None
+
+            # 0 devices connected: attempt dynamic auto-connect only if auto_connect is True
+            return self._attempt_auto_connect() if auto_connect else None
         except Exception as e:
             log.debug("Failed to resolve wireless ADB device: %s", e)
             return None
 
     def probe(self) -> bool:
-        dev = self._get_device()
+        # Probe is strictly side-effect-free (no adb connect or mDNS auto-connect)
+        dev = self._get_device(auto_connect=False)
         return dev is not None
 
     def ensure(self) -> bool:
-        dev = self._get_device()
+        dev = self._get_device(auto_connect=True)
         if not dev:
             return False
 
@@ -316,11 +421,21 @@ class WirelessAdbTransport(CDPTransport):
         target_local = f"tcp:{self.cdp_port}"
         target_remote = f"localabstract:{socket_name}"
         try:
+            stale_forward = False
             for item in dev.forward_list():
-                if item.local == target_local and item.remote == target_remote:
-                    if verify_cdp_endpoint(self.endpoint, timeout=1.0):
-                        return True
+                if item.local == target_local:
+                    if item.remote == target_remote:
+                        if verify_cdp_endpoint(self.endpoint, timeout=1.0):
+                            return True
+                    stale_forward = True
                     break
+
+            if stale_forward:
+                try:
+                    dev.forward_remove(target_local)
+                    log.debug("Removed stale forward on %s for %s", dev.serial, target_local)
+                except Exception:
+                    pass
 
             dev.forward(target_local, target_remote)
             log.info("WirelessAdb: Forwarded CDP port %d to %s on %s", self.cdp_port, target_remote, dev.serial)
@@ -451,7 +566,11 @@ class AndroidCDPManager:
                 return client.device(serial=self.serial)
             devices = [d for d in client.device_list() if not d.serial.startswith("127.0.0.1:")]
             if len(devices) == 1:
-                return devices[0]
+                try:
+                    devices[0].shell("echo ping")
+                    return devices[0]
+                except Exception:
+                    return None
             if len(devices) > 1:
                 log.error(
                     "Multiple ADB devices found (%d: %s) with no explicit serial configured. "
@@ -466,12 +585,46 @@ class AndroidCDPManager:
             return None
 
     def is_adb_connected(self) -> bool:
-        """Check if at least one Android device is connected via ADB."""
+        """Check if at least one responsive Android device is connected via ADB."""
         try:
-            device = self.get_device()
-            return device is not None
+            client = self._get_client()
+            if self.serial:
+                try:
+                    dev = client.device(serial=self.serial)
+                    dev.shell("echo ping")
+                    return True
+                except Exception:
+                    return False
+            devices = [d for d in client.device_list() if not d.serial.startswith("127.0.0.1:")]
+            for d in devices:
+                try:
+                    d.shell("echo ping")
+                    return True
+                except Exception:
+                    continue
+            return False
         except Exception:
             return False
+
+    def health(self) -> dict:
+        """Report comprehensive health status of Android CDP manager and active transport."""
+        transport = self._active_transport or self.select_transport()
+        connected = self.is_adb_connected()
+        dev = self.get_device()
+        endpoint = f"http://127.0.0.1:{self.cdp_port}"
+        cdp_ready = verify_cdp_endpoint(endpoint, timeout=0.5)
+        res = {
+            "status": "ready" if (connected and cdp_ready) else ("connected" if connected else "disconnected"),
+            "is_adb_connected": connected,
+            "device_serial": getattr(dev, "serial", None) if dev else None,
+            "cdp_port": self.cdp_port,
+            "cdp_endpoint": endpoint,
+            "cdp_ready": cdp_ready,
+            "active_mode": self._active_mode.value,
+        }
+        if transport and hasattr(transport, "health"):
+            res["transport"] = transport.health()
+        return res
 
     def discover_chrome_devtools_socket(self) -> Optional[str]:
         """

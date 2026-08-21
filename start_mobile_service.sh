@@ -17,7 +17,7 @@ export AVF_PORT="8000"
 export FLOW_PROJECT_ID="${FLOW_PROJECT_ID:-362c6899-f74f-4118-b7d8-613ade3cd3af}"
 export FLOW_CDP_PORT="${FLOW_CDP_PORT:-9222}"
 export FLOW_CDP_URL="${FLOW_CDP_URL:-http://127.0.0.1:${FLOW_CDP_PORT}}"
-export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-native}"
+export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-android_chrome}"
 export AVF_FLOW_MODE="flow_balanced"
 export AVF_FLOW_MODEL="omni_flash"
 
@@ -40,10 +40,23 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 
 # 3. Ensure CDP Backend Ownership (CDP_OWNER=exactly_one)
-if [ "$AVF_BROWSER_BACKEND" = "native" ]; then
+if [ "$AVF_BROWSER_BACKEND" = "android_chrome" ]; then
+    export FLOW_ANDROID_CDP="1"
+    export FLOW_CDP_URL="http://127.0.0.1:${FLOW_CDP_PORT}"
+    echo "📱 Đảm bảo Android Chrome CDP trên cổng ${FLOW_CDP_PORT} (primary mobile path)..."
+    "$PYTHON_BIN" - <<PY || true
+import sys
+from auto_video_factory.flow_provider.android import AndroidCDPManager
+mgr = AndroidCDPManager(cdp_port=int('${FLOW_CDP_PORT}'))
+if mgr.ensure_cdp_forward():
+    print('✅ Android Chrome DevTools socket đã được forward thành công.')
+else:
+    print('⚠️ Android Chrome forward chưa sẵn sàng. Tiếp tục với backend configured.')
+PY
+elif [ "$AVF_BROWSER_BACKEND" = "native" ]; then
     export FLOW_ANDROID_CDP="0"
     export FLOW_CDP_URL="http://127.0.0.1:${FLOW_CDP_PORT}"
-    echo "📱 Đảm bảo Native Termux Chromium trên cổng ${FLOW_CDP_PORT} (zero-ADB daily path)..."
+    echo "📱 Đảm bảo Native Termux Chromium trên cổng ${FLOW_CDP_PORT} (zero-ADB fallback path)..."
     "$PYTHON_BIN" - <<PY || true
 import sys
 from auto_video_factory.flow_provider.native_chromium import NativeChromiumManager, NativeChromiumConfig
@@ -65,7 +78,7 @@ elif [ "$AVF_BROWSER_BACKEND" = "adb" ]; then
         "$ADB_BIN" forward "tcp:${FLOW_CDP_PORT}" localabstract:chrome_devtools_remote >/dev/null 2>&1 || true
     fi
 else
-    echo "❌ Lỗi: AVF_BROWSER_BACKEND='$AVF_BROWSER_BACKEND' không hợp lệ. Chỉ chấp nhận 'native' hoặc 'adb'." >&2
+    echo "❌ Lỗi: AVF_BROWSER_BACKEND='$AVF_BROWSER_BACKEND' không hợp lệ. Chỉ chấp nhận 'android_chrome', 'native' hoặc 'adb'." >&2
     exit 1
 fi
 
