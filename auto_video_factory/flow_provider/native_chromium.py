@@ -35,11 +35,19 @@ DEFAULT_CHROMIUM_PROFILE_DIR = Path.home() / ".config" / "auto-video-factory" / 
 
 @dataclass
 class NativeChromiumConfig:
+    """Configuration for Native Chromium lifecycle management.
+
+    Note on no_sandbox: Android / Termux kernels disable unprivileged user namespaces
+    (CLONE_NEWUSER) and setuid root helpers, which causes standard Chromium sandboxing
+    to abort on startup. Therefore, no_sandbox defaults to True for mobile/Termux
+    environments, but can be set to False on desktop Linux systems with kernel sandbox support.
+    """
     binary_path: Optional[str] = None
     host: str = DEFAULT_CDP_HOST
     port: int = DEFAULT_CDP_PORT
     user_data_dir: Optional[Path] = None
     headless: bool = True
+    no_sandbox: bool = True
     extra_flags: list[str] = field(default_factory=list)
 
     def __post_init__(self):
@@ -130,10 +138,12 @@ class NativeChromiumManager:
             "--disable-sync",
             "--disable-features=Translate",
             "--disable-component-update",
-            "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
         ]
+
+        if self.config.no_sandbox:
+            args.append("--no-sandbox")
 
         if self.config.headless:
             args.append("--headless=new")
