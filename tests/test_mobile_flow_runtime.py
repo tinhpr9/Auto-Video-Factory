@@ -90,12 +90,12 @@ class TestOmniFlashRouting:
         provider = ProductionFlowProvider(project_id="test_proj", cdp_url="http://127.0.0.1:9222")
         provider._client = fake_client
 
-        # No injection — upstream returns [] → get_models returns []
-        models_prod = provider.get_models()
-        assert models_prod == [], (
-            "ProductionFlowProvider.get_models must return upstream list as-is; "
-            "Omni Flash is selected via explicit AVF_FLOW_MODEL override, not model listing."
-        )
+        with patch.object(ProductionFlowProvider, "_import_flow", return_value=(MagicMock(), MagicMock(), MagicMock())):
+            models_prod = provider.get_models()
+            assert models_prod == [], (
+                "ProductionFlowProvider.get_models must return upstream list as-is; "
+                "Omni Flash is selected via explicit AVF_FLOW_MODEL override, not model listing."
+            )
 
     def test_production_flow_provider_generate_video_passes_omni_flash_name(self):
         """generate_video must send model='Omni Flash' to flow-py (not 'omni_flash')."""
@@ -121,7 +121,8 @@ class TestOmniFlashRouting:
             aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
             count=1,
         )
-        res = provider.generate_video(req)
+        with patch.object(ProductionFlowProvider, "_import_flow", return_value=(MagicMock(), MagicMock(), MagicMock())):
+            res = provider.generate_video(req)
         assert res.status == FlowJobStatus.SUBMITTED
         assert res.provider_job_id == "test_media_123"
         fake_client.generate_video.assert_called_once_with(
@@ -344,7 +345,7 @@ class TestClipValidationAndPipeline:
                 factory.generate("Test topic", temp_dir / "job_02")
 
     def test_pipeline_rejects_duplicate_scene_indices(self, temp_dir):
-        """Duplicate scene indices must raise ValueError before rendering."""
+        """Duplicate scene indices must raise ValueError before image creation or TTS synthesis."""
         planner = MagicMock()
         scenes = [
             Scene(index=1, narration="Narration 1", visual_prompt="Prompt 1"),
@@ -364,3 +365,36 @@ class TestClipValidationAndPipeline:
         with patch("auto_video_factory.pipeline.media_duration", return_value=2.0):
             with pytest.raises(ValueError, match="Duplicate scene index"):
                 factory.generate("Test topic", temp_dir / "job_dup")
+
+        # Must not call image provider or TTS on invalid duplicate plan
+        assert img_prov.create.call_count == 0, "img_prov.create must not be called when duplicate scene index exists"
+        assert tts.synthesize.call_count == 0, "tts.synthesize must not be called when duplicate scene index exists"
+
+
+class TestMobileLauncherScript:
+    def test_start_mobile_service_script_structure_and_safety(self):
+        script_path = Path("start_mobile_service.sh")
+        assert script_path.exists()
+        content = script_path.read_text(encoding="utf-8")
+
+        # Root Cause A safety invariants:
+        assert 'export AVF_LOCAL_PHONE="1"' in content
+        assert 'export AVF_REQUIRE_AUTH="0"' in content
+        assert 'export AVF_HOST="127.0.0.1"' in content
+
+        # Root Cause B safety invariants:
+        # 1. Server started first in background before browser launch
+        # 2. Bounded probe loop checking /health
+        # 3. Only after readiness PASS, invoke browser (am start)
+        # 4. Fail cleanly if readiness probe times out
+        assert "/health" in content
+        assert "am start" in content
+        # Ensure 'am start' does not happen before background server launch
+        server_launch_pos = content.find("auto_video_factory.web")
+        am_start_pos = content.find("am start")
+        assert server_launch_pos != -1
+        assert am_start_pos != -1
+        assert server_launch_pos < am_start_pos, (
+            "start_mobile_service.sh must start server before attempting to open browser with am start"
+        )
+

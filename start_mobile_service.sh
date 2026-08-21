@@ -54,9 +54,54 @@ echo "✨ Model mặc định: Omni Flash (4s, 7 credits, tỉ lệ 9:16)"
 echo "💡 Bạn có thể lưu trang web vào Màn hình chính (PWA) để mở 1 chạm mỗi ngày."
 echo "========================================================"
 
-# Try opening in native Android browser if am is available
-if command -v am >/dev/null 2>&1; then
-    am start -a android.intent.action.VIEW -d "http://127.0.0.1:${AVF_PORT}" >/dev/null 2>&1 || true
+# 4. Start local Web server first in background
+"$PYTHON_BIN" -m auto_video_factory.web &
+SERVER_PID=$!
+
+cleanup() {
+    if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        kill -TERM "$SERVER_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+# 5. Bounded readiness probe before launching browser
+echo "⏳ Đang chờ Web server sẵn sàng..."
+READY=0
+PROBE_MAX_ATTEMPTS=40
+
+for ((i=1; i<=PROBE_MAX_ATTEMPTS; i++)); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "❌ Server process exited unexpectedly." >&2
+        wait "$SERVER_PID" 2>/dev/null || true
+        exit 1
+    fi
+
+    # Probe /health endpoint via python urllib
+    if "$PYTHON_BIN" -c "
+import urllib.request, sys
+try:
+    with urllib.request.urlopen('http://127.0.0.1:${AVF_PORT}/health', timeout=1) as resp:
+        if resp.status == 200:
+            sys.exit(0)
+except Exception:
+    sys.exit(1)
+" >/dev/null 2>&1; then
+        READY=1
+        break
+    fi
+    sleep 0.25
+done
+
+if [ "$READY" -eq 1 ]; then
+    echo "✅ Server đã sẵn sàng. Mở Web UI..."
+    if command -v am >/dev/null 2>&1; then
+        am start -a android.intent.action.VIEW -d "http://127.0.0.1:${AVF_PORT}" >/dev/null 2>&1 || true
+    fi
+else
+    echo "❌ Server readiness probe timed out after $((PROBE_MAX_ATTEMPTS / 4)) seconds." >&2
+    exit 1
 fi
 
-exec "$PYTHON_BIN" -m auto_video_factory.web
+# Wait for server to run in foreground
+wait "$SERVER_PID"

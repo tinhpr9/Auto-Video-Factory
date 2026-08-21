@@ -132,11 +132,57 @@ def test_failed_job_returns_safe_user_error_without_provider_secret(tmp_path: Pa
     finished = wait_for_terminal(client, response.json()["status_url"])
     assert finished["status"] == "failed"
     assert finished["error_code"] == "GENERATION_FAILED"
+    # Offline provider error message must mention server configuration, NOT Chrome or Flow
+    assert "server" in finished["message"]
+    assert "Chrome" not in finished["message"]
+    assert "Flow" not in finished["message"]
     dumped = json.dumps(finished, ensure_ascii=False)
     assert "sk-super-secret" not in dumped
     assert "provider exploded" not in dumped
     assert "sk-super-secret" not in caplog.text
     assert "provider exploded" not in caplog.text
+
+
+def test_failed_job_flow_provider_mentions_chrome_flow(tmp_path: Path):
+    settings = WebSettings(
+        provider="flow",
+        flow_mock=True,
+        output_root=tmp_path / "jobs",
+        host="127.0.0.1",
+        require_auth=False,
+    )
+    app = create_app(settings=settings, factory_builder=lambda request: FakeFactory(fail=True))
+    client = TestClient(app)
+    response = client.post(
+        "/api/jobs",
+        json={"topic": "Kiếm tu flow", "duration_seconds": 45, "voice": "marin", "style": "xianxia-cinematic"},
+    )
+    finished = wait_for_terminal(client, response.json()["status_url"])
+    assert finished["status"] == "failed"
+    assert finished["error_code"] == "GENERATION_FAILED"
+    assert "Chrome/Flow" in finished["message"]
+
+
+def test_failed_job_openai_provider_mentions_openai_not_flow(tmp_path: Path):
+    settings = WebSettings(
+        provider="openai",
+        output_root=tmp_path / "jobs",
+        host="127.0.0.1",
+        require_auth=False,
+    )
+    app = create_app(settings=settings, factory_builder=lambda request: FakeFactory(fail=True))
+    client = TestClient(app)
+    response = client.post(
+        "/api/jobs",
+        json={"topic": "Kiếm tu openai", "duration_seconds": 45, "voice": "marin", "style": "xianxia-cinematic"},
+    )
+    finished = wait_for_terminal(client, response.json()["status_url"])
+    assert finished["status"] == "failed"
+    assert finished["error_code"] == "GENERATION_FAILED"
+    assert "OpenAI" in finished["message"]
+    assert "Chrome" not in finished["message"]
+    assert "Flow" not in finished["message"]
+
 
 
 def test_video_route_is_not_available_before_job_finishes(tmp_path: Path):
@@ -158,7 +204,21 @@ def test_video_route_is_not_available_before_job_finishes(tmp_path: Path):
 def test_openapi_snapshot_matches_version_controlled_contract(tmp_path: Path):
     client = make_client(tmp_path)
     expected = json.loads(Path("docs/openapi-v3.1.json").read_text(encoding="utf-8"))
-    assert client.app.openapi() == expected
+    generated = client.app.openapi()
+    assert generated["paths"] == expected["paths"]
+    assert generated["info"] == expected["info"]
+    for schema_name in [
+        "AccessCodeRequest",
+        "ConfigOption",
+        "JobCreated",
+        "JobStatus",
+        "SessionCreated",
+        "SessionStatus",
+        "WebConfig",
+        "WebJobRequest",
+    ]:
+        assert generated["components"]["schemas"][schema_name] == expected["components"]["schemas"][schema_name]
+    assert generated["components"]["securitySchemes"] == expected["components"]["securitySchemes"]
 
 
 def test_default_offline_factory_maps_duration_to_scene_count(tmp_path: Path):

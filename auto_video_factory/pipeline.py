@@ -52,6 +52,17 @@ class VideoFactory:
         plan = self.planner.plan(topic)
         report(12, "Đã có kịch bản")
 
+        if not plan.scenes:
+            raise ValueError("Plan contains no scenes")
+
+        seen_indices: set[int] = set()
+        for scene in plan.scenes:
+            if not isinstance(scene.index, int) or scene.index <= 0:
+                raise ValueError(f"Invalid scene index: {scene.index}")
+            if scene.index in seen_indices:
+                raise ValueError(f"Duplicate scene index detected: {scene.index}")
+            seen_indices.add(scene.index)
+
         images: list[Path] = []
         audios: list[Path] = []
         timings: list[SceneTiming] = []
