@@ -458,7 +458,7 @@ class ProductionFlowProvider(FlowProvider):
         """Return cached FlowClient or create a new one on the persistent event loop."""
         with self._lock:
             if self._client is None:
-                FlowClient, _, _ = self._import_flow()
+                FlowClient, flow_exc, _ = self._import_flow()
                 if self._android_manager:
                     try:
                         self._android_manager.ensure_cdp_forward()
@@ -481,7 +481,102 @@ class ProductionFlowProvider(FlowProvider):
                         cdp_url=self._cdp_url,
                     )
                 )
+                self._harden_client_ui(self._client, flow_exc)
             return self._client
+
+    def _harden_client_ui(self, client, flow_exc) -> None:
+        """
+        Enhance client._ui with robust multi-locale, material icon, and data-attribute tab selectors,
+        and fail-closed behavior so portrait requests never silently degrade to landscape.
+
+        When the requested aspect ratio control cannot be positively selected, raises flow_exc.UIError
+        so the caller's except-UIError handler routes the job to USER_INTERACTION_REQUIRED instead of
+        continuing to a paid submission with an unverified (default/wrong) aspect ratio.
+        """
+        if not hasattr(client, "_ui") or client._ui is None:
+            return
+        ui = client._ui
+        if getattr(ui, "_is_hardened", False):
+            return
+
+        async def robust_set_aspect_ratio(page, ratio) -> bool:
+            await ui.open_settings_panel(page)
+            from flow import AspectRatio  # noqa: PLC0415
+            label_map = {
+                AspectRatio.LANDSCAPE: [
+                    "Landscape", "crop_16_9 Landscape", "crop_16_9Landscape", "Ngang", "16:9", "crop_16_9",
+                ],
+                AspectRatio.PORTRAIT: [
+                    "Portrait", "crop_9_16 Portrait", "crop_9_16Portrait", "Dọc", "9:16", "crop_9_16",
+                ],
+                AspectRatio.SQUARE: [
+                    "Square", "crop_1_1 Square", "crop_1_1Square", "Vuông", "1:1", "crop_1_1",
+                ],
+            }
+            # 1. Try Playwright role tab / locator
+            for label in label_map.get(ratio, []):
+                try:
+                    tab = page.get_by_role("tab", name=label, exact=True).first
+                    if await tab.count() > 0:
+                        await tab.click()
+                        await asyncio.sleep(0.3)
+                        return True
+                    tab = page.locator("[role='tab']").filter(has_text=label).first
+                    if await tab.count() > 0:
+                        await tab.click()
+                        await asyncio.sleep(0.3)
+                        return True
+                    tab = page.locator("button").filter(has_text=label).first
+                    if await tab.count() > 0:
+                        await tab.click()
+                        await asyncio.sleep(0.3)
+                        return True
+                except Exception:
+                    pass
+
+            # 2. Robust JS evaluate fallback searching text, aria-label, title, value, and
+            #    data-aspect-ratio attribute (P2: attribute value is now explicitly compared)
+            target_terms = [t.lower() for t in label_map.get(ratio, [])]
+            try:
+                clicked = await page.evaluate("""
+                    (terms) => {
+                        const elements = [...document.querySelectorAll('[role="tab"], button, [data-aspect-ratio]')];
+                        for (const el of elements) {
+                            const text = (el.textContent || '').trim().toLowerCase();
+                            const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+                            const title = (el.getAttribute('title') || '').trim().toLowerCase();
+                            const val = (el.getAttribute('value') || '').trim().toLowerCase();
+                            const dataAspect = (el.getAttribute('data-aspect-ratio') || '').trim().toLowerCase();
+                            for (const term of terms) {
+                                if (text === term || text.includes(term) || aria.includes(term) || title.includes(term) || val.includes(term) || dataAspect === term || dataAspect.includes(term)) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                """, target_terms)
+                if clicked:
+                    await asyncio.sleep(0.3)
+                    return True
+            except Exception:
+                pass
+
+            # Fail closed (P1): raise UIError so generate_video routes to USER_INTERACTION_REQUIRED.
+            # NEVER return False and allow upstream generate_video to submit with an unverified
+            # (potentially wrong default) aspect ratio.
+            ratio_str = getattr(ratio, "value", str(ratio))
+            log.warning(
+                "Could not find aspect ratio tab for %s — raising UIError (fail-closed)", ratio_str
+            )
+            raise flow_exc.UIError(
+                f"Aspect ratio selection failed for {ratio_str!r}: no matching tab or button found. "
+                "Cannot confirm aspect before generation. Requires user interaction."
+            )
+
+        ui.set_aspect_ratio = robust_set_aspect_ratio
+        ui._is_hardened = True
 
 
     # ── Exception classification ─────────────────────────────────────────────
@@ -725,12 +820,23 @@ class ProductionFlowProvider(FlowProvider):
 
         _, flow_exc, _ = self._import_flow()
 
-        # Map aspect ratio
+        # Map aspect ratio strictly with enum and string normalization
         aspect_map = {
             FlowAspectRatio.PORTRAIT_9_16:  "portrait",
+            "9:16":                         "portrait",
+            "PORTRAIT":                     "portrait",
+            "portrait":                     "portrait",
             FlowAspectRatio.LANDSCAPE_16_9: "landscape",
+            "16:9":                         "landscape",
+            "LANDSCAPE":                    "landscape",
+            "landscape":                    "landscape",
             FlowAspectRatio.SQUARE_1_1:     "square",
+            "1:1":                          "square",
+            "SQUARE":                       "square",
+            "square":                       "square",
         }
+        if request.aspect_ratio not in aspect_map:
+            log.warning("Unknown aspect ratio %r, defaulting to portrait 9:16", request.aspect_ratio)
         aspect_str = aspect_map.get(request.aspect_ratio, "portrait")
 
         # Map model name

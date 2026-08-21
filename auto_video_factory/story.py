@@ -11,18 +11,18 @@ class TemplateStoryPlanner:
     """
 
     _beats = (
-        "Mọi chuyện bắt đầu khi {topic}. Không ai nghĩ biến cố nhỏ ấy sẽ đổi cả số phận.",
-        "Giữa màn sương lạnh, nhân vật chính nhận ra mình không còn đường lùi và buộc phải tiến lên.",
-        "Những người từng coi thường hắn vẫn đứng phía sau, nhưng một dấu hiệu kỳ lạ đã xuất hiện trong cơ thể.",
-        "Khi nguy hiểm ập tới, sức mạnh ngủ quên bỗng thức tỉnh, khiến cả không gian xung quanh như ngừng lại.",
-        "Hắn không vội trả thù. Trước tiên, hắn giữ im lặng và tìm cách hiểu sức mạnh mới của mình.",
-        "Một đối thủ mạnh hơn xuất hiện, buộc hắn phải lựa chọn giữa bỏ chạy và đối mặt với quá khứ.",
-        "Chỉ trong một khoảnh khắc, thế cục đảo ngược. Những kẻ từng chế giễu bắt đầu nhận ra mình đã nhìn nhầm người.",
-        "Nhưng đây mới chỉ là khởi đầu. Phía sau sơn môn vẫn còn một bí mật lớn hơn đang chờ được mở ra.",
-        "Tin tức lan khắp nơi, kéo theo những thế lực vốn im lặng bắt đầu chú ý tới cái tên tưởng đã bị lãng quên.",
-        "Trước cánh cửa cuối cùng, hắn hiểu rằng thử thách thật sự không phải kẻ thù, mà là lựa chọn mình sắp đưa ra.",
-        "Một quyết định bất ngờ khiến mọi người sững sờ, đồng thời mở ra con đường mà chưa ai dám bước.",
-        "Câu chuyện dừng lại ở đó, ngay trước khi bí mật lớn nhất được hé lộ trong phần tiếp theo.",
+        "Mọi chuyện bắt đầu khi {topic}. Từng bước chân nặng nề trên con đường phủ đầy tuyết trắng, không ai ngờ rằng biến cố cay đắng ngày hôm ấy lại chính là khởi đầu cho một huyền thoại.",
+        "Giữa màn sương lạnh buốt giá của đỉnh núi cao, nhân vật chính nhận ra mình không còn đường lui. Hắn siết chặt thanh kiếm trong tay và kiên định bước về phía trước.",
+        "Những người từng coi thường hắn vẫn đứng đằng xa xì xào bàn tán, nhưng một luồng linh khí kỳ lạ bỗng nhiên cuộn trào mãnh liệt từ sâu bên trong kinh mạch.",
+        "Khi nguy hiểm cận kề ập tới trong chớp mắt, sức mạnh ngủ quên bấy lâu bỗng thức tỉnh, tỏa ra hào quang rực rỡ khiến cả không gian xung quanh như ngưng đọng lại.",
+        "Hắn không hề nóng vội trả thù những kẻ từng hãm hại mình. Trước tiên, hắn chọn cách ẩn nhẫn, tĩnh tâm để thấu hiểu tường tận nguồn sức mạnh vô tận mới khai mở.",
+        "Một đối thủ hùng mạnh bậc nhất bất ngờ xuất hiện chắn ngang lối đi, buộc hắn phải đưa ra lựa chọn sinh tử giữa việc lùi bước hay dũng cảm đối mặt với quá khứ nghiệt ngã.",
+        "Chỉ trong một khoảnh khắc ngắn ngủi, toàn bộ thế cục hoàn toàn đảo ngược. Những kẻ từng lớn tiếng chế giễu bắt đầu run sợ nhận ra mình đã đánh giá sai người.",
+        "Nhưng tất cả điều này mới chỉ là bước khởi đầu gian nan. Phía sau cánh cổng sơn môn thâm u vẫn còn một bí mật kinh thiên động địa đang chờ được giải mã.",
+        "Tin tức chấn động nhanh chóng lan truyền khắp muôn nơi, kéo theo những thế lực cổ xưa vốn ẩn mình bắt đầu hướng sự chú ý về cái tên tưởng chừng đã bị lãng quên.",
+        "Đứng trước cánh cửa phong ấn cuối cùng, hắn hiểu sâu sắc rằng thử thách thực sự không phải là đối thủ trước mắt, mà là quyết định mang tính vận mệnh sắp được đưa ra.",
+        "Một quyết định bất ngờ và táo bạo khiến tất cả mọi người đều sững sờ kinh ngạc, đồng thời chính thức mở ra một con đường xán lạn mà xưa nay chưa từng có ai dám bước.",
+        "Câu chuyện tạm dừng lại ở khúc quanh định mệnh ấy, ngay trước khi cánh cửa dẫn tới bí mật lớn nhất của toàn cõi thiên hạ chuẩn bị hé mở trong hồi tiếp theo.",
     )
 
     _visuals = (
