@@ -1144,3 +1144,136 @@ def test_finding_a_cli_and_web_production_config_wiring(monkeypatch, tmp_path: P
     assert isinstance(web_flow_prov, ProductionFlowProvider)
     assert web_flow_prov._project_id == "test_proj_env_123"
     assert web_flow_prov._cdp_url == "http://127.0.0.1:9222"
+
+
+# =====================================================================
+# 13. ASPECT RATIO TRANSLATION & UI HARDENING TESTS
+# =====================================================================
+
+@pytest.mark.parametrize(
+    ("input_aspect", "expected_flow_aspect"),
+    [
+        (FlowAspectRatio.PORTRAIT_9_16, "portrait"),
+        ("9:16", "portrait"),
+        ("PORTRAIT", "portrait"),
+        ("portrait", "portrait"),
+        (FlowAspectRatio.LANDSCAPE_16_9, "landscape"),
+        ("16:9", "landscape"),
+        ("LANDSCAPE", "landscape"),
+        ("landscape", "landscape"),
+        (FlowAspectRatio.SQUARE_1_1, "square"),
+        ("1:1", "square"),
+        ("SQUARE", "square"),
+        ("square", "square"),
+    ],
+)
+def test_production_flow_provider_aspect_ratio_translation_matrix(
+    input_aspect, expected_flow_aspect
+):
+    fake_client = _FakeFlowClient()
+    flow_mod, exc_mod, video_job_cls = _setup_fake_flow_env(fake_client)
+
+    p = ProductionFlowProvider(project_id="proj_aspect_test")
+    req = FlowGenerationRequest(
+        job_id="job_aspect",
+        prompt="A serene lotus flower on a pond",
+        model=FlowModel.OMNI_FLASH,
+        aspect_ratio=input_aspect,
+        count=1,
+    )
+
+    with patch.object(p, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        p._client_cache = fake_client
+        res = p.generate_video(req)
+
+    assert res.status == FlowJobStatus.SUBMITTED
+    fake_client.generate_video.assert_called_once_with(
+        prompt="A serene lotus flower on a pond",
+        model="Omni Flash",
+        aspect=expected_flow_aspect,
+        count=1,
+        start_image=None,
+    )
+
+
+def test_flow_visual_provider_preserves_portrait_contract(tmp_path: Path):
+    from auto_video_factory.flow_provider.models import FlowHealthStatus
+    from auto_video_factory.flow_provider.visual_provider import FlowVisualProvider
+    from auto_video_factory.models import Scene
+
+    mock_controller = MagicMock()
+    mock_controller._is_safety_paused.return_value = False
+    mock_controller.health.return_value = FlowHealthStatus(
+        healthy=True,
+        authenticated=True,
+        profile_exists=True,
+        browser_ready=True,
+        details={"flow_url": "https://mock.flow"},
+    )
+    (tmp_path / "scene_01.mp4").write_bytes(b"dummy-mp4-data")
+    mock_controller.submit.side_effect = lambda req: req.job_id
+    mock_controller.process_job.side_effect = lambda jid: FlowJobResult(
+        job_id=jid,
+        provider_job_id="prov_123",
+        status=FlowJobStatus.COMPLETED,
+        output_files=[tmp_path / "scene_01.mp4"],
+    )
+
+    vp = FlowVisualProvider(
+        controller=mock_controller,
+        model=FlowModel.OMNI_FLASH,
+        aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+    )
+
+    scene = Scene(index=1, narration="Test narration", visual_prompt="A misty mountain path")
+    out_file = tmp_path / "out.mp4"
+    with patch.object(vp, "_strip_audio_if_present"):
+        res_path = vp.create(scene, out_file)
+
+    assert res_path == out_file
+    mock_controller.submit.assert_called_once()
+    submitted_req = mock_controller.submit.call_args[0][0]
+    assert submitted_req.aspect_ratio == FlowAspectRatio.PORTRAIT_9_16
+    assert submitted_req.model == FlowModel.OMNI_FLASH
+
+
+def test_harden_client_ui_aspect_ratio_tab_selectors():
+    """
+    Test that _harden_client_ui installs a robust set_aspect_ratio method
+    that correctly finds material icon ligatures, Vietnamese text, and data attributes.
+    """
+    p = ProductionFlowProvider()
+    mock_client = MagicMock()
+    mock_ui = MagicMock()
+    mock_ui._is_hardened = False
+    mock_ui.open_settings_panel = AsyncMock()
+    mock_client._ui = mock_ui
+
+    exc_mod = _make_stub_exc_module()
+    p._harden_client_ui(mock_client, exc_mod)
+    assert mock_ui._is_hardened is True
+
+    # Test execution of hardened set_aspect_ratio with a mock page
+    from flow import AspectRatio
+
+    # 1. Page with matching tab
+    mock_page = MagicMock()
+    mock_tab = MagicMock()
+    mock_tab.count = AsyncMock(return_value=1)
+    mock_tab.click = AsyncMock()
+    mock_page.get_by_role.return_value.first = mock_tab
+
+    res = p._run(mock_ui.set_aspect_ratio(mock_page, AspectRatio.PORTRAIT))
+    assert res is True
+    mock_tab.click.assert_called_once()
+
+    # 2. Page where role matching fails but evaluate succeeds
+    mock_page_eval = MagicMock()
+    mock_page_eval.get_by_role.return_value.first.count = AsyncMock(return_value=0)
+    mock_page_eval.locator.return_value.filter.return_value.first.count = AsyncMock(return_value=0)
+    mock_page_eval.locator.return_value.first.count = AsyncMock(return_value=0)
+    mock_page_eval.evaluate = AsyncMock(return_value=True)
+
+    res_eval = p._run(mock_ui.set_aspect_ratio(mock_page_eval, AspectRatio.PORTRAIT))
+    assert res_eval is True
+    mock_page_eval.evaluate.assert_called_once()

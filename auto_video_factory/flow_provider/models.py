@@ -133,6 +133,21 @@ class FlowGenerationRequest:
         if not self.client_request_id:
             self.client_request_id = self.job_id
 
+        if isinstance(self.model, str):
+            try:
+                self.model = FlowModel(self.model)
+            except ValueError:
+                self.model = FlowModel[self.model.upper()] if self.model.upper() in FlowModel.__members__ else FlowModel.VEO_3_1_FAST
+        if isinstance(self.aspect_ratio, str):
+            if self.aspect_ratio in ("9:16", "PORTRAIT", "portrait"):
+                self.aspect_ratio = FlowAspectRatio.PORTRAIT_9_16
+            elif self.aspect_ratio in ("16:9", "LANDSCAPE", "landscape"):
+                self.aspect_ratio = FlowAspectRatio.LANDSCAPE_16_9
+            elif self.aspect_ratio in ("1:1", "SQUARE", "square"):
+                self.aspect_ratio = FlowAspectRatio.SQUARE_1_1
+            else:
+                self.aspect_ratio = FlowAspectRatio(self.aspect_ratio)
+
         # Compute deterministic prompt hash including all generation-affecting fields
         normalized_prompt = self.prompt.strip()
         hasher = hashlib.sha256()
