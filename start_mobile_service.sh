@@ -42,16 +42,18 @@ fi
 # 3. Ensure CDP Backend Ownership (CDP_OWNER=exactly_one)
 if [ "$AVF_BROWSER_BACKEND" = "native" ]; then
     export FLOW_ANDROID_CDP="0"
+    export FLOW_CDP_URL="http://127.0.0.1:${FLOW_CDP_PORT}"
     echo "📱 Đảm bảo Native Termux Chromium trên cổng ${FLOW_CDP_PORT} (zero-ADB daily path)..."
-    "$PYTHON_BIN" -c "
+    "$PYTHON_BIN" - <<PY || true
 import sys
 from auto_video_factory.flow_provider.native_chromium import NativeChromiumManager, NativeChromiumConfig
 mgr = NativeChromiumManager(NativeChromiumConfig(port=int('${FLOW_CDP_PORT}'), host='127.0.0.1', headless=True))
 if not mgr.ensure(timeout=8.0):
     print('⚠️ Native Chromium chưa thể khởi động tự động. Tiếp tục với CDP endpoint được cấu hình.')
-" || true
+PY
 elif [ "$AVF_BROWSER_BACKEND" = "adb" ]; then
     export FLOW_ANDROID_CDP="1"
+    export FLOW_CDP_URL="http://127.0.0.1:${FLOW_CDP_PORT}"
     echo "📱 Khởi chạy Legacy Android ADB Fallback..."
     ADB_BIN="/data/data/com.termux/files/usr/bin/adb"
     if [ ! -x "$ADB_BIN" ] && command -v adb >/dev/null 2>&1; then
@@ -62,6 +64,9 @@ elif [ "$AVF_BROWSER_BACKEND" = "adb" ]; then
         "$ADB_BIN" connect 127.0.0.1:5555 >/dev/null 2>&1 || true
         "$ADB_BIN" forward "tcp:${FLOW_CDP_PORT}" localabstract:chrome_devtools_remote >/dev/null 2>&1 || true
     fi
+else
+    echo "❌ Lỗi: AVF_BROWSER_BACKEND='$AVF_BROWSER_BACKEND' không hợp lệ. Chỉ chấp nhận 'native' hoặc 'adb'." >&2
+    exit 1
 fi
 
 echo "🌐 Web UI: http://127.0.0.1:${AVF_PORT}"
@@ -92,15 +97,7 @@ for ((i=1; i<=PROBE_MAX_ATTEMPTS; i++)); do
         exit 1
     fi
 
-    if "$PYTHON_BIN" -c "
-import urllib.request, sys
-try:
-    with urllib.request.urlopen('http://127.0.0.1:${AVF_PORT}/health', timeout=1) as resp:
-        if resp.status == 200:
-            sys.exit(0)
-except Exception:
-    sys.exit(1)
-" >/dev/null 2>&1; then
+    if "$PYTHON_BIN" -c "import urllib.request, sys; sys.exit(0 if getattr(urllib.request.urlopen('http://127.0.0.1:${AVF_PORT}/health', timeout=1), 'status', 0) == 200 else 1)" >/dev/null 2>&1; then
         READY=1
         break
     fi

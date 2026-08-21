@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -41,6 +42,16 @@ class NativeChromiumConfig:
     headless: bool = True
     extra_flags: list[str] = field(default_factory=list)
 
+    def __post_init__(self):
+        # Security invariant: only loopback addresses allowed for CDP binding
+        allowed_loopbacks = {"127.0.0.1", "localhost", "::1", "ip6-localhost", "ip6-loopback"}
+        if self.host not in allowed_loopbacks:
+            raise ValueError(f"Host '{self.host}' is not a permitted loopback address for native CDP.")
+        if self.user_data_dir is None:
+            env_profile = os.getenv("FLOW_CHROMIUM_PROFILE_DIR")
+            if env_profile:
+                self.user_data_dir = Path(env_profile)
+
 
 class NativeChromiumManager:
     """
@@ -55,6 +66,12 @@ class NativeChromiumManager:
         "/usr/bin/google-chrome",
         "/usr/bin/google-chrome-stable",
     ]
+
+    DISALLOWED_EXTRA_FLAG_PREFIXES = (
+        "--remote-debugging-port",
+        "--remote-debugging-address",
+        "--user-data-dir",
+    )
 
     def __init__(self, config: Optional[NativeChromiumConfig] = None):
         self.config = config or NativeChromiumConfig()
@@ -122,7 +139,12 @@ class NativeChromiumManager:
             args.append("--headless=new")
 
         if self.config.extra_flags:
-            args.extend(self.config.extra_flags)
+            # Filter disallowed flags that attempt to hijack CDP port/host/profile
+            safe_extra = [
+                flag for flag in self.config.extra_flags
+                if not any(flag.startswith(prefix) for prefix in self.DISALLOWED_EXTRA_FLAG_PREFIXES)
+            ]
+            args.extend(safe_extra)
 
         args.append("about:blank")
         return args
@@ -160,16 +182,33 @@ class NativeChromiumManager:
 
     def stop(self, timeout: float = 3.0) -> None:
         if self._process is not None and self._process.poll() is None:
-            log.info("Stopping native Chromium process (PID: %s)...", self._process.pid)
+            pid = self._process.pid
+            log.info("Stopping native Chromium process (PID: %s)...", pid)
             try:
-                self._process.terminate()
+                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                else:
+                    self._process.terminate()
+            except Exception:
+                try:
+                    self._process.terminate()
+                except Exception:
+                    pass
+
+            try:
                 self._process.wait(timeout=timeout)
             except Exception:
                 try:
-                    self._process.kill()
-                    self._process.wait(timeout=1.0)
+                    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    else:
+                        self._process.kill()
                 except Exception as e:
-                    log.debug("Failed to force kill Chromium process: %s", e)
+                    log.debug("Failed to force kill Chromium process group: %s", e)
+                try:
+                    self._process.wait(timeout=1.0)
+                except Exception:
+                    pass
         self._process = None
 
     def ensure(self, timeout: float = 10.0) -> bool:
@@ -201,6 +240,7 @@ class NativeChromiumManager:
             time.sleep(0.25)
 
         log.error("Native Chromium CDP readiness timed out after %s seconds on %s.", timeout, self.cdp_url)
+        self.stop(timeout=2.0)
         return False
 
 
@@ -211,7 +251,11 @@ def main():
     parser.add_argument("--host", default=DEFAULT_CDP_HOST, help="CDP host")
     parser.add_argument("--ensure", action="store_true", help="Ensure running and ready")
     parser.add_argument("--check", action="store_true", help="Check readiness and exit")
-    parser.add_argument("--headless", action="store_true", default=True, help="Run headless")
+    
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--headless", dest="headless", action="store_true", default=True, help="Run in headless mode (default)")
+    group.add_argument("--headed", dest="headless", action="store_false", help="Run in visible / headed mode (for login)")
+    
     args = parser.parse_args()
 
     cfg = NativeChromiumConfig(host=args.host, port=args.port, headless=args.headless)

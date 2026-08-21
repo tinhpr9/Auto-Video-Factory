@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -74,10 +75,22 @@ def check_cdp_endpoint_detailed(endpoint_url: str, timeout: float = 3.0) -> CDPE
     """
     Perform rigorous, bounded HTTP DevTools Protocol checks against the EXACT configured endpoint.
     """
-    host, port, base_url = parse_cdp_url(endpoint_url)
+    start_time = time.monotonic()
+    try:
+        host, port, base_url = parse_cdp_url(endpoint_url)
+    except (ValueError, Exception) as e:
+        return CDPEndpointStatus(
+            ready=False,
+            tcp_reachable=False,
+            version_valid=False,
+            targets_valid=False,
+            endpoint_url=endpoint_url,
+            error=f"Invalid CDP endpoint URL: {e}",
+        )
 
     # 1. TCP Port Reachability Probe
-    tcp_timeout = min(timeout, 1.0)
+    elapsed = time.monotonic() - start_time
+    tcp_timeout = min(max(0.01, timeout - elapsed), 1.0)
     if not is_tcp_port_reachable(host, port, timeout=tcp_timeout):
         return CDPEndpointStatus(
             ready=False,
@@ -93,7 +106,8 @@ def check_cdp_endpoint_detailed(endpoint_url: str, timeout: float = 3.0) -> CDPE
     browser_ver = ""
     proto_ver = ""
     ws_url = ""
-    http_timeout = max(0.5, timeout - tcp_timeout)
+    elapsed = time.monotonic() - start_time
+    http_timeout = max(0.01, timeout - elapsed)
 
     try:
         req = urllib.request.Request(
@@ -128,6 +142,8 @@ def check_cdp_endpoint_detailed(endpoint_url: str, timeout: float = 3.0) -> CDPE
     targets_valid = False
     targets_count = 0
     for target_path in ("/json", "/json/list"):
+        elapsed = time.monotonic() - start_time
+        http_timeout = max(0.01, timeout - elapsed)
         try:
             req = urllib.request.Request(
                 f"{base_url}{target_path}",
@@ -144,7 +160,7 @@ def check_cdp_endpoint_detailed(endpoint_url: str, timeout: float = 3.0) -> CDPE
         except Exception as e:
             log.debug("CDP %s check failed on %s: %s", target_path, base_url, e)
 
-    is_ready = tcp_reachable = version_valid and targets_valid
+    is_ready = version_valid and targets_valid
     return CDPEndpointStatus(
         ready=is_ready,
         tcp_reachable=True,

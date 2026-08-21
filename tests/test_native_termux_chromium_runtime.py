@@ -186,7 +186,7 @@ class TestNativePhoneProductionBackend:
     def test_native_selected_over_adb(self, mock_cdp_server):
         """TEST_NATIVE_SELECTED_OVER_ADB: Given native phone backend selected,
         AndroidCDPManager is NOT instantiated and FLOW_ANDROID_CDP is 0."""
-        cdp_url, port = mock_cdp_server
+        cdp_url, _port = mock_cdp_server
         with patch.dict(os.environ, {
             "FLOW_CDP_URL": cdp_url,
             "FLOW_ANDROID_CDP": "0",
@@ -206,7 +206,7 @@ class TestNativePhoneProductionBackend:
     def test_no_adb_daily_path(self, mock_cdp_server, monkeypatch):
         """TEST_NO_ADB_DAILY_PATH: Native startup must not execute any ADB commands.
         Enforces ADB_COMMAND_COUNT=0."""
-        cdp_url, port = mock_cdp_server
+        cdp_url, _port = mock_cdp_server
         adb_call_count = 0
 
         def fake_subprocess_run(args, *a, **kw):
@@ -236,7 +236,7 @@ class TestNativePhoneProductionBackend:
     def test_single_owner(self, mock_cdp_server):
         """TEST_SINGLE_OWNER: Native backend selected -> exactly one owner (NATIVE_TERMUX_CHROMIUM),
         never simultaneously owning tcp:9222 with ADB."""
-        cdp_url, port = mock_cdp_server
+        cdp_url, _port = mock_cdp_server
         with patch.dict(os.environ, {
             "FLOW_CDP_URL": cdp_url,
             "FLOW_ANDROID_CDP": "0",
@@ -272,6 +272,35 @@ class TestNativeChromiumManager:
         assert f"--user-data-dir={tmp_path / 'chrome_profile'}" in args
         assert "--no-sandbox" in args
         assert "--headless=new" in args
+
+    def test_manager_rejects_non_loopback_host(self):
+        with pytest.raises(ValueError, match="not a permitted loopback address"):
+            NativeChromiumConfig(host="0.0.0.0", port=9222)
+        with pytest.raises(ValueError, match="not a permitted loopback address"):
+            NativeChromiumConfig(host="192.168.1.100", port=9222)
+
+    def test_manager_filters_disallowed_extra_flags(self, tmp_path):
+        cfg = NativeChromiumConfig(
+            port=9222,
+            host="127.0.0.1",
+            user_data_dir=tmp_path / "chrome_profile",
+            extra_flags=[
+                "--remote-debugging-port=9999",
+                "--remote-debugging-address=0.0.0.0",
+                "--user-data-dir=/tmp/bad",
+                "--enable-automation",
+            ],
+            binary_path="/usr/bin/chromium",
+        )
+        mgr = NativeChromiumManager(config=cfg)
+        args = mgr.build_launch_args()
+
+        assert "--remote-debugging-port=9222" in args
+        assert "--remote-debugging-address=127.0.0.1" in args
+        assert f"--user-data-dir={tmp_path / 'chrome_profile'}" in args
+        assert "--remote-debugging-port=9999" not in args
+        assert "--remote-debugging-address=0.0.0.0" not in args
+        assert "--enable-automation" in args
 
     def test_manager_resolves_cdp_url(self, tmp_path):
         cfg = NativeChromiumConfig(
@@ -317,7 +346,7 @@ class TestFlowClientAttach:
     def test_flow_client_can_attach_to_native_endpoint(self, mock_cdp_server):
         """TEST_FLOW_CLIENT_ATTACH: Exercises actual ProductionFlowProvider client creation
         and model querying against the CDP endpoint without performing paid generation."""
-        cdp_url, port = mock_cdp_server
+        cdp_url, _port = mock_cdp_server
 
         fake_api = AsyncMock()
         fake_api.get_credits.return_value = MagicMock(credits=500)
