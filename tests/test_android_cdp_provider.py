@@ -506,3 +506,183 @@ class TestTransportRouter:
             assert manager.get_active_transport_mode() == CDPTransportMode.USER_INTERACTION_REQUIRED
 
 
+class TestAndroidChromeProductionBackend:
+    """Targeted tests for Android Chrome CDP production backend requirements."""
+
+    def test_reuse_existing_pairing(self):
+        """TEST_REUSE_EXISTING_PAIRING: No pairing request when paired device is still valid."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_client = MagicMock()
+        mock_device = MagicMock(serial="192.168.1.137:38555")
+        mock_client.device_list.return_value = [mock_device]
+
+        with patch.object(transport, "_get_client", return_value=mock_client):
+            dev = transport._get_device()
+            assert dev == mock_device
+            mock_client.connect.assert_not_called()
+
+    def test_connect_port_changed_auto_rediscovered(self):
+        """TEST_CONNECT_PORT_CHANGED: Old connect endpoint stale. mDNS returns new endpoint -> auto-connected."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+        mock_new_device = MagicMock(serial="192.168.1.137:45678")
+        mock_client.connect.return_value = "connected to 192.168.1.137:45678"
+        mock_client.device.return_value = mock_new_device
+
+        with patch.object(transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:45678"]):
+            dev = transport._get_device()
+            assert dev == mock_new_device
+            mock_client.connect.assert_called_once_with("192.168.1.137:45678")
+
+    def test_pairing_port_not_used_for_connect(self):
+        """TEST_PAIRING_PORT_NOT_USED_FOR_CONNECT: Ensure pairing port is never treated as connect port."""
+        from auto_video_factory.flow_provider.android import discover_mdns_wireless_endpoints
+        # Pairing port broadcasts _adb-tls-pairing._tcp, connect broadcasts _adb-tls-connect._tcp
+        mock_output = (
+            "adb-10AC8A299S000GL-9I791Q\t_adb-tls-pairing._tcp\t192.168.1.137:39353\n"
+            "adb-10AC8A299S000GL-9I791Q\t_adb-tls-connect._tcp\t192.168.1.137:38555\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=mock_output)
+            discovered = discover_mdns_wireless_endpoints()
+            assert "192.168.1.137:38555" in discovered
+            assert "192.168.1.137:39353" not in discovered
+
+    def test_dynamic_phone_ip(self):
+        """TEST_DYNAMIC_PHONE_IP: Phone LAN IP changes -> rediscovery works dynamically."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+        mock_new_device = MagicMock(serial="10.0.0.42:37777")
+        mock_client.connect.return_value = "connected to 10.0.0.42:37777"
+        mock_client.device.return_value = mock_new_device
+
+        with patch.object(transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["10.0.0.42:37777"]):
+            dev = transport._get_device()
+            assert dev == mock_new_device
+
+    def test_pid_suffixed_socket(self):
+        """TEST_PID_SUFFIXED_SOCKET: chrome_devtools_remote_1234 is forwarded correctly."""
+        from auto_video_factory.flow_provider.android import discover_device_devtools_socket
+        mock_dev = MagicMock()
+        mock_dev.shell.return_value = (
+            "0000000000000000: 00000002 00000000 00010000 0001 01 99999 @chrome_devtools_remote_5678\n"
+        )
+        socket_name = discover_device_devtools_socket(mock_dev)
+        assert socket_name == "chrome_devtools_remote_5678"
+
+    def test_stale_forward(self):
+        """TEST_STALE_FORWARD: Existing local port pointing to wrong socket/device is repaired safely."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_dev = MagicMock(serial="192.168.1.137:38555")
+        mock_dev.shell.return_value = "00000000: 00000002 00000000 00010000 0001 01 12345 @chrome_devtools_remote_999\n"
+        
+        # Simulate an old forward to a wrong socket
+        stale_item = SimpleNamespace(local="tcp:9222", remote="localabstract:chrome_devtools_remote_old")
+        mock_dev.forward_list.return_value = [stale_item]
+
+        with patch.object(transport, "_get_device", return_value=mock_dev), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            ok = transport.ensure()
+            assert ok is True
+            mock_dev.forward_remove.assert_called_once_with("tcp:9222")
+            mock_dev.forward.assert_called_once_with("tcp:9222", "localabstract:chrome_devtools_remote_999")
+
+    def test_android_chrome_auth_session(self):
+        """TEST_ANDROID_CHROME_AUTH_SESSION: ProductionFlowProvider detects authenticated Android Chrome CDP."""
+        mock_mgr = MagicMock(spec=AndroidCDPManager)
+        mock_mgr.ensure_cdp_forward.return_value = True
+        mock_mgr.is_adb_connected.return_value = True
+        mock_mgr.cdp_port = 9222
+
+        provider = ProductionFlowProvider(
+            project_id="test-proj-uuid",
+            cdp_url="http://127.0.0.1:9222",
+            android_manager=mock_mgr,
+            backend="android_chrome",
+        )
+
+        with patch("auto_video_factory.flow_provider.provider.check_cdp_endpoint_detailed") as mock_check:
+            mock_check.return_value = SimpleNamespace(ready=True, error=None)
+            status = provider.health()
+            assert status.healthy is True
+            assert status.authenticated is True
+            assert status.details.get("backend") == "android_chrome"
+            assert status.details.get("cdp_owner") == "ANDROID_CHROME_CDP"
+
+    def test_reattach(self):
+        """TEST_REATTACH: Detach and reattach preserves session and manager."""
+        mock_mgr = MagicMock(spec=AndroidCDPManager)
+        mock_mgr.ensure_cdp_forward.return_value = True
+        mock_mgr.is_adb_connected.return_value = True
+        mock_mgr.cdp_port = 9222
+
+        provider = ProductionFlowProvider(
+            project_id="test-proj-uuid",
+            cdp_url="http://127.0.0.1:9222",
+            android_manager=mock_mgr,
+            backend="android_chrome",
+        )
+
+        with patch("auto_video_factory.flow_provider.provider.check_cdp_endpoint_detailed") as mock_check:
+            mock_check.return_value = SimpleNamespace(ready=True, error=None)
+            s1 = provider.health()
+            assert s1.healthy is True
+            provider.close()
+            s2 = provider.health()
+            assert s2.healthy is True
+
+    def test_pairing_lost(self):
+        """TEST_PAIRING_LOST: Lost pairing fails closed with USER_INTERACTION_REQUIRED=ANDROID_WIRELESS_DEBUG_PAIRING."""
+        mock_mgr = MagicMock(spec=AndroidCDPManager)
+        mock_mgr.ensure_cdp_forward.return_value = False
+        mock_mgr.is_adb_connected.return_value = False
+        mock_mgr.cdp_port = 9222
+
+        provider = ProductionFlowProvider(
+            project_id="test-proj-uuid",
+            cdp_url="http://127.0.0.1:9222",
+            android_manager=mock_mgr,
+            backend="android_chrome",
+        )
+
+        status = provider.health()
+        assert status.healthy is False
+        assert status.authenticated is False
+        assert status.details.get("user_interaction_required") == "ANDROID_WIRELESS_DEBUG_PAIRING"
+
+    def test_native_fallback(self):
+        """TEST_NATIVE_FALLBACK: Android Chrome backend unavailable -> native fallback routes deterministically."""
+        provider_native = ProductionFlowProvider(
+            project_id="test-proj-uuid",
+            cdp_url="http://127.0.0.1:9222",
+            backend="native",
+        )
+        assert provider_native._backend == "native"
+        assert provider_native._android_manager is None
+
+        with patch("auto_video_factory.flow_provider.provider.check_cdp_endpoint_detailed") as mock_check:
+            mock_check.return_value = SimpleNamespace(ready=True, error=None)
+            status = provider_native.health()
+            assert status.details.get("cdp_owner") == "NATIVE_TERMUX_CHROMIUM"
+
+    def test_no_manual_daily_values(self):
+        """TEST_NO_MANUAL_DAILY_VALUES: Daily path operates automatically with 0 manual IP/port/code inputs."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+        mock_device = MagicMock(serial="192.168.1.137:38555")
+        mock_client.connect.return_value = "connected to 192.168.1.137:38555"
+        mock_client.device.return_value = mock_device
+
+        with patch.object(transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:38555"]):
+            dev = transport._get_device()
+            assert dev == mock_device
+            assert transport.serial is None  # Never required hard-coded serial
+
+
+

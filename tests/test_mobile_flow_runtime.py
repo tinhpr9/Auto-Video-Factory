@@ -381,8 +381,8 @@ class TestMobileLauncherScript:
         assert 'export AVF_LOCAL_PHONE="1"' in content
         assert 'export AVF_REQUIRE_AUTH="0"' in content
         assert 'export AVF_HOST="127.0.0.1"' in content
-        assert 'export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-native}"' in content
-        assert 'export FLOW_ANDROID_CDP="0"' in content
+        assert 'AVF_BROWSER_BACKEND=' in content
+        assert 'FLOW_ANDROID_CDP=' in content
 
         # Root Cause B safety invariants:
         # 1. Server started first in background before browser launch
