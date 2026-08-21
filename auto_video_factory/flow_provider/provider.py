@@ -44,6 +44,7 @@ class MockFlowProvider(FlowProvider):
     """
 
     MODEL_COSTS = {
+        FlowModel.OMNI_FLASH: 7,
         FlowModel.VEO_3_1_FAST: 20,
         FlowModel.VEO_3_1_QUALITY: 100,
         FlowModel.VEO_2_1_FAST: 10,
@@ -83,6 +84,13 @@ class MockFlowProvider(FlowProvider):
     def get_models(self) -> list[FlowModelInfo]:
         return [
             FlowModelInfo(
+                model_id=FlowModel.OMNI_FLASH.value,
+                name="Omni Flash (4s, 7 credits)",
+                capabilities=["text_to_video", "image_to_video", "audio"],
+                cost_credits=7,
+                default_aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+            ),
+            FlowModelInfo(
                 model_id=FlowModel.VEO_3_1_FAST.value,
                 name="Veo 3.1 - Fast (1080p, audio)",
                 capabilities=["text_to_video", "image_to_video", "audio"],
@@ -104,6 +112,7 @@ class MockFlowProvider(FlowProvider):
                 default_aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
             ),
         ]
+
 
     def generate_video(self, request: FlowGenerationRequest) -> FlowJobResult:
         if request.start_image_path is not None:
@@ -731,6 +740,12 @@ class ProductionFlowProvider(FlowProvider):
         }
         aspect_str = aspect_map.get(request.aspect_ratio, "portrait")
 
+        # Map model name
+        if request.model == FlowModel.OMNI_FLASH or request.model.value == "omni_flash":
+            model_name = "Omni Flash"
+        else:
+            model_name = request.model.value
+
         try:
             client = self._get_client()
             credits_before_obj = self._run(client._api.get_credits())
@@ -740,12 +755,13 @@ class ProductionFlowProvider(FlowProvider):
                 return self._run(
                     client.generate_video(
                         prompt=request.prompt,
-                        model=request.model.value,   # e.g. "veo_3_1_t2v_fast_portrait"
+                        model=model_name,
                         aspect=aspect_str,
                         count=1,
                         start_image=start_image,
                     )
                 )
+
 
             if self._android_manager:
                 project_url = (

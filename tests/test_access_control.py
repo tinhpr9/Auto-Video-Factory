@@ -128,3 +128,101 @@ def test_mobile_shell_has_access_code_gate_without_persisting_raw_code(tmp_path:
     assert "Mở khóa" in html
     assert "localStorage" not in html
     assert ACCESS_CODE not in html
+
+
+def test_production_flow_with_require_auth_and_no_code_rejected(monkeypatch):
+    monkeypatch.setenv("AVF_PROVIDER", "flow")
+    monkeypatch.delenv("AVF_ACCESS_CODE", raising=False)
+    monkeypatch.delenv("AVF_REQUIRE_AUTH", raising=False)
+    monkeypatch.delenv("AVF_LOCAL_PHONE", raising=False)
+    monkeypatch.delenv("AVF_FLOW_MOCK", raising=False)
+    with pytest.raises(ValueError, match="AVF_ACCESS_CODE is required when AVF_PROVIDER=flow"):
+        WebSettings.from_env()
+
+
+def test_local_phone_unauthenticated_flow_allowed_on_loopback(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AVF_PROVIDER", "flow")
+    monkeypatch.delenv("AVF_ACCESS_CODE", raising=False)
+    monkeypatch.setenv("AVF_LOCAL_PHONE", "1")
+    monkeypatch.setenv("AVF_REQUIRE_AUTH", "0")
+    monkeypatch.setenv("AVF_HOST", "127.0.0.1")
+    monkeypatch.delenv("AVF_FLOW_MOCK", raising=False)
+
+    settings = WebSettings.from_env()
+    assert settings.provider == "flow"
+    assert settings.require_auth is False
+    assert settings.access_code is None
+    assert settings.host == "127.0.0.1"
+
+    app = create_app(
+        settings=WebSettings(
+            provider="flow",
+            flow_mock=True,
+            output_root=tmp_path / "jobs",
+            host="127.0.0.1",
+            require_auth=False,
+            access_code=None,
+        ),
+        factory_builder=lambda request: FakeFactory(),
+    )
+    client = TestClient(app)
+    status_resp = client.get("/api/session")
+    assert status_resp.status_code == 200
+    assert status_resp.json() == {"auth_required": False, "authenticated": True}
+    # Unauthenticated job creation must succeed on loopback
+    job_resp = client.post(
+        "/api/jobs",
+        json={"topic": "Loopback Test", "duration_seconds": 60, "voice": "marin", "style": "xianxia-cinematic"},
+    )
+    assert job_resp.status_code == 202
+
+
+def test_unauthenticated_mode_rejected_on_all_interfaces_0000(monkeypatch):
+    monkeypatch.setenv("AVF_PROVIDER", "flow")
+    monkeypatch.delenv("AVF_ACCESS_CODE", raising=False)
+    monkeypatch.setenv("AVF_REQUIRE_AUTH", "0")
+    monkeypatch.setenv("AVF_HOST", "0.0.0.0")
+
+    with pytest.raises(ValueError, match="loopback"):
+        WebSettings.from_env()
+
+
+def test_unauthenticated_mode_rejected_on_non_loopback_external_host(monkeypatch):
+    monkeypatch.setenv("AVF_PROVIDER", "flow")
+    monkeypatch.delenv("AVF_ACCESS_CODE", raising=False)
+    monkeypatch.setenv("AVF_REQUIRE_AUTH", "0")
+    monkeypatch.setenv("AVF_HOST", "192.168.1.100")
+
+    with pytest.raises(ValueError, match="loopback"):
+        WebSettings.from_env()
+
+
+def test_create_app_rejects_unauthenticated_mode_on_non_loopback_settings(tmp_path: Path):
+    settings = WebSettings(
+        provider="flow",
+        flow_mock=True,
+        output_root=tmp_path / "jobs",
+        host="0.0.0.0",
+        require_auth=False,
+        access_code=None,
+    )
+    with pytest.raises(ValueError, match="loopback"):
+        create_app(settings=settings)
+
+
+def test_existing_authenticated_production_flow_behavior_unchanged(tmp_path: Path):
+    settings = WebSettings(
+        provider="flow",
+        flow_mock=True,
+        output_root=tmp_path / "jobs",
+        host="0.0.0.0",
+        require_auth=True,
+        access_code=ACCESS_CODE,
+    )
+    app = create_app(settings=settings, factory_builder=lambda request: FakeFactory())
+    client = TestClient(app)
+    # Without token, config and jobs return 401
+    assert client.get("/api/config").status_code == 401
+    token = login(client)
+    assert client.get("/api/config", headers=bearer(token)).status_code == 200
+

@@ -50,26 +50,36 @@ class FlowAspectRatio(str, Enum):
 
 
 class FlowModel(str, Enum):
-    """Supported Google Flow Veo models."""
+    """Supported Google Flow models."""
+    OMNI_FLASH = "omni_flash"
     VEO_3_1_FAST = "veo_3_1_t2v_fast"
     VEO_3_1_QUALITY = "veo_3_1_t2v"
     VEO_2_1_FAST = "veo_2_1_fast_d_15_t2v"
 
 
 FLOW_MODE_TO_MODEL: dict[str, FlowModel] = {
-    "flow_quality": FlowModel.VEO_3_1_QUALITY,
-    "flow_economy": FlowModel.VEO_2_1_FAST,
+    # Pre-existing Veo mode routes — preserved (do NOT change)
     "flow_balanced": FlowModel.VEO_3_1_FAST,
+    "flow_economy": FlowModel.VEO_2_1_FAST,
+    "flow_quality": FlowModel.VEO_3_1_QUALITY,
+    # Phone one-tap direct key: Omni Flash (7 credits, 4s, fast)
+    "omni_flash": FlowModel.OMNI_FLASH,
 }
 
 FLOW_MODEL_MAP: dict[str, FlowModel] = {
+    "omni-flash": FlowModel.OMNI_FLASH,
+    "omni_flash": FlowModel.OMNI_FLASH,
+    "Omni Flash": FlowModel.OMNI_FLASH,
+    "gemini-omni-flash": FlowModel.OMNI_FLASH,
     "veo-3.1-fast": FlowModel.VEO_3_1_FAST,
     "veo-3.1-quality": FlowModel.VEO_3_1_QUALITY,
     "veo-2.1-fast": FlowModel.VEO_2_1_FAST,
+    FlowModel.OMNI_FLASH.value: FlowModel.OMNI_FLASH,
     FlowModel.VEO_3_1_FAST.value: FlowModel.VEO_3_1_FAST,
     FlowModel.VEO_3_1_QUALITY.value: FlowModel.VEO_3_1_QUALITY,
     FlowModel.VEO_2_1_FAST.value: FlowModel.VEO_2_1_FAST,
 }
+
 
 
 @dataclass

@@ -30,6 +30,16 @@ logger = logging.getLogger("auto_video_factory.web")
 from .presets import DURATION_TO_SCENES, STYLE_OPTIONS, VOICE_OPTIONS
 
 
+def is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        import ipaddress
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
 
 @dataclass(frozen=True)
 class WebSettings:
@@ -43,6 +53,7 @@ class WebSettings:
     auth_attempts_per_minute: int = 5
     max_jobs_per_hour: int = 12
     flow_mock: bool = False
+    require_auth: bool = True
 
     @classmethod
     def from_env(cls) -> "WebSettings":
@@ -61,8 +72,25 @@ class WebSettings:
             if len(access_code) < 12:
                 raise ValueError("AVF_ACCESS_CODE must be at least 12 characters")
         flow_mock = os.getenv("AVF_FLOW_MOCK", "").strip().lower() in ("1", "true", "yes")
-        if (provider == "openai" or (provider == "flow" and not flow_mock)) and not access_code:
-            raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={provider}")
+        require_auth_env = os.getenv("AVF_REQUIRE_AUTH", "").strip().lower()
+        local_phone_env = os.getenv("AVF_LOCAL_PHONE", "").strip().lower()
+        auth_disabled = (
+            require_auth_env in ("0", "false", "no")
+            or local_phone_env in ("1", "true", "yes")
+        )
+        require_auth = not auth_disabled
+        default_host = "127.0.0.1" if local_phone_env in ("1", "true", "yes") else "0.0.0.0"
+        host = os.getenv("AVF_HOST", default_host)
+        if not require_auth:
+            if not is_loopback_host(host):
+                raise ValueError(
+                    f"Unauthenticated mode (require_auth=False) is only allowed on loopback host (127.0.0.1 / localhost / ::1), got host={host}"
+                )
+            if not access_code:
+                access_code = None
+        else:
+            if (provider == "openai" or (provider == "flow" and not flow_mock)) and not access_code:
+                raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={provider}")
         session_ttl_seconds = int(os.getenv("AVF_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
         auth_attempts_per_minute = int(os.getenv("AVF_AUTH_ATTEMPTS_PER_MINUTE", "5"))
         max_jobs_per_hour = int(os.getenv("AVF_MAX_JOBS_PER_HOUR", "12"))
@@ -76,14 +104,16 @@ class WebSettings:
             provider=provider,
             output_root=Path(os.getenv("AVF_OUTPUT_ROOT", "output/web")),
             max_workers=max_workers,
-            host=os.getenv("AVF_HOST", "0.0.0.0"),
+            host=host,
             port=port,
             access_code=access_code,
             session_ttl_seconds=session_ttl_seconds,
             auth_attempts_per_minute=auth_attempts_per_minute,
             max_jobs_per_hour=max_jobs_per_hour,
             flow_mock=flow_mock,
+            require_auth=require_auth,
         )
+
 
 
 
@@ -117,7 +147,7 @@ class SessionManager:
 
     @property
     def auth_required(self) -> bool:
-        return bool(self.settings.access_code)
+        return self.settings.require_auth and bool(self.settings.access_code)
 
     def _purge_attempts(self, client_key: str, now: float) -> deque[float]:
         attempts = self._failed_logins.setdefault(client_key, deque())
@@ -377,15 +407,40 @@ class JobManager:
                 on_progress=progress,
             )
         except Exception as exc:
-            # Do not log raw exception text: third-party exceptions can embed
-            # credentials or response bodies. Keep a safe type-only breadcrumb.
-            logger.error("Video generation failed for job %s (%s)", job_id, exc.__class__.__name__)
-            self._update(
-                job_id,
-                status="failed",
-                message="Không thể tạo video. Hãy kiểm tra cấu hình server rồi thử lại.",
-                error_code="GENERATION_FAILED",
-            )
+            # Check for USER_INTERACTION_REQUIRED or Flow errors (guard import for offline/openai providers)
+            is_user_interaction = False
+            try:
+                from .flow_provider.visual_provider import FlowUserInteractionRequiredError
+                from .flow_provider.models import FlowFailureClass
+                is_user_interaction = (
+                    isinstance(exc, FlowUserInteractionRequiredError)
+                    or getattr(exc, "failure_class", None) == FlowFailureClass.USER_INTERACTION_REQUIRED
+                )
+            except ImportError:
+                pass
+
+            if is_user_interaction:
+                logger.warning("Job %s requires user interaction (%s)", job_id, exc.__class__.__name__)
+                self._update(
+                    job_id,
+                    status="failed",
+                    message="Google Flow yêu cầu tương tác trên điện thoại (đăng nhập hoặc kiểm tra Chrome). Hãy mở Chrome rồi thử lại.",
+                    error_code="USER_INTERACTION_REQUIRED",
+                )
+            else:
+                logger.error("Video generation failed for job %s (%s)", job_id, exc.__class__.__name__)
+                if self.settings.provider == "flow":
+                    msg = "Không thể tạo video. Hãy kiểm tra kết nối Chrome/Flow rồi thử lại."
+                elif self.settings.provider == "openai":
+                    msg = "Không thể tạo video. Hãy kiểm tra cấu hình OpenAI / API key rồi thử lại."
+                else:
+                    msg = "Không thể tạo video. Hãy kiểm tra cấu hình server rồi thử lại."
+                self._update(
+                    job_id,
+                    status="failed",
+                    message=msg,
+                    error_code="GENERATION_FAILED",
+                )
             return
 
         self._update(
@@ -396,6 +451,7 @@ class JobManager:
             title=result.plan.title,
             video=result.video,
         )
+
 
     def get(self, job_id: str) -> _JobRecord:
         with self._lock:
@@ -423,10 +479,16 @@ def create_app(
     factory_builder: FactoryBuilder | None = None,
 ) -> FastAPI:
     resolved = settings or WebSettings.from_env()
-    if resolved.access_code is not None and len(resolved.access_code) < 12:
-        raise ValueError("AVF_ACCESS_CODE must be at least 12 characters")
-    if (resolved.provider == "openai" or (resolved.provider == "flow" and not resolved.flow_mock)) and not resolved.access_code:
-        raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={resolved.provider}")
+    if resolved.require_auth:
+        if resolved.access_code is not None and len(resolved.access_code) < 12:
+            raise ValueError("AVF_ACCESS_CODE must be at least 12 characters")
+        if (resolved.provider == "openai" or (resolved.provider == "flow" and not resolved.flow_mock)) and not resolved.access_code:
+            raise ValueError(f"AVF_ACCESS_CODE is required when AVF_PROVIDER={resolved.provider}")
+    else:
+        if not is_loopback_host(resolved.host):
+            raise ValueError(
+                f"Unauthenticated mode (require_auth=False) is only allowed on loopback host (127.0.0.1 / localhost / ::1), got host={resolved.host}"
+            )
 
     shared_flow_controller = None
     if resolved.provider == "flow":
@@ -494,6 +556,26 @@ def create_app(
     @app.get("/health", include_in_schema=False)
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/manifest.json", include_in_schema=False)
+    def manifest() -> dict[str, object]:
+        return {
+            "name": "Auto Video Factory",
+            "short_name": "AutoVideo",
+            "start_url": "/",
+            "display": "standalone",
+            "background_color": "#070b12",
+            "theme_color": "#0c1420",
+            "description": "Tạo video AI tự động bằng Google Flow",
+            "icons": [
+                {
+                    "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%237ee0ff'/><polygon points='40,30 70,50 40,70' fill='%23061019'/></svg>",
+                    "sizes": "192x192 512x512",
+                    "type": "image/svg+xml",
+                }
+            ],
+        }
+
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
