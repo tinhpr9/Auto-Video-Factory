@@ -522,18 +522,111 @@ class ProductionFlowProvider(FlowProvider):
         if getattr(ui, "_is_hardened", False):
             return
 
+        orig_open_settings = ui.open_settings_panel
+
+        async def robust_open_settings_panel(page) -> bool:
+            # Check if settings panel / tabs are already visible
+            try:
+                is_visible = await page.evaluate(
+                    "() => document.querySelectorAll('[role=\"tab\"]').length > 0"
+                )
+                if is_visible:
+                    return True
+            except Exception:
+                pass
+
+            try:
+                if await orig_open_settings(page):
+                    return True
+            except Exception:
+                pass
+
+            # Multi-locale pointer/mouse dispatch on bottom settings pill
+            try:
+                opened = await page.evaluate("""
+                    () => {
+                        const btns = [...document.querySelectorAll('button')];
+                        const pill = btns.find(b => {
+                            const t = (b.textContent || '').trim();
+                            return /x[1-4]/.test(t) || t.includes('Video') || t.includes('720p') || t.includes('1080p') || t.includes('giây') || t.includes('crop_16_9') || t.includes('crop_9_16') || t.includes('crop_1_1');
+                        });
+                        if (pill) {
+                            pill.dispatchEvent(new MouseEvent('pointerdown', {bubbles: true}));
+                            pill.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                            pill.dispatchEvent(new MouseEvent('pointerup', {bubbles: true}));
+                            pill.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                            pill.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                            return true;
+                        }
+                        return false;
+                    }
+                """)
+                if opened:
+                    await asyncio.sleep(0.8)
+                    is_visible = await page.evaluate(
+                        "() => document.querySelectorAll('[role=\"tab\"]').length > 0"
+                    )
+                    if is_visible:
+                        return True
+            except Exception:
+                pass
+
+            return await ui._settings_visible(page)
+
+        async def robust_switch_mode(page, mode) -> bool:
+            await ui.open_settings_panel(page)
+            from flow import GenerationMode  # noqa: PLC0415
+            label_map = {
+                GenerationMode.IMAGE:          ["Image", "image Image", "imageImage", "imageHình ảnh", "Hình ảnh"],
+                GenerationMode.VIDEO:          ["Video", "videocam Video", "videocamVideo", "Video"],
+                GenerationMode.FRAME_TO_VIDEO: ["Frames", "crop_free Frames", "crop_freeKhung hình", "Khung hình", "Video"],
+            }
+            target_terms = [t.lower() for t in label_map.get(mode, [])]
+            for label in label_map.get(mode, []):
+                try:
+                    tab = page.get_by_role("tab", name=label, exact=True).first
+                    if await tab.count() > 0:
+                        await tab.click()
+                        await asyncio.sleep(0.3)
+                        return True
+                except Exception:
+                    pass
+
+            try:
+                clicked = await page.evaluate("""
+                    (terms) => {
+                        const elements = [...document.querySelectorAll('[role="tab"], button')];
+                        for (const el of elements) {
+                            const text = (el.textContent || '').trim().toLowerCase();
+                            for (const term of terms) {
+                                if (text === term || text.includes(term)) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                """, target_terms)
+                if clicked:
+                    await asyncio.sleep(0.3)
+                    return True
+            except Exception:
+                pass
+            return False
+
         async def robust_set_aspect_ratio(page, ratio) -> bool:
             await ui.open_settings_panel(page)
             from flow import AspectRatio  # noqa: PLC0415
             label_map = {
                 AspectRatio.LANDSCAPE: [
-                    "Landscape", "crop_16_9 Landscape", "crop_16_9Landscape", "Ngang", "16:9", "crop_16_9",
+                    "Landscape", "crop_16_9 Landscape", "crop_16_9Landscape", "crop_16_916:9", "crop_16_9 16:9", "Ngang", "16:9", "crop_16_9",
                 ],
                 AspectRatio.PORTRAIT: [
-                    "Portrait", "crop_9_16 Portrait", "crop_9_16Portrait", "Dọc", "9:16", "crop_9_16",
+                    "Portrait", "crop_9_16 Portrait", "crop_9_16Portrait", "crop_9_169:16", "crop_9_16 9:16", "Dọc", "9:16", "crop_9_16",
                 ],
                 AspectRatio.SQUARE: [
-                    "Square", "crop_1_1 Square", "crop_1_1Square", "Vuông", "1:1", "crop_1_1",
+                    "Square", "crop_1_1 Square", "crop_1_1Square", "crop_1_11:1", "crop_1_1 1:1", "Vuông", "1:1", "crop_1_1",
                 ],
             }
             # 1. Try Playwright role tab / locator
@@ -587,8 +680,6 @@ class ProductionFlowProvider(FlowProvider):
                 pass
 
             # Fail closed (P1): raise UIError so generate_video routes to USER_INTERACTION_REQUIRED.
-            # NEVER return False and allow upstream generate_video to submit with an unverified
-            # (potentially wrong default) aspect ratio.
             ratio_str = getattr(ratio, "value", str(ratio))
             log.warning(
                 "Could not find aspect ratio tab for %s — raising UIError (fail-closed)", ratio_str
@@ -598,6 +689,8 @@ class ProductionFlowProvider(FlowProvider):
                 "Cannot confirm aspect before generation. Requires user interaction."
             )
 
+        ui.open_settings_panel = robust_open_settings_panel
+        ui.switch_mode = robust_switch_mode
         ui.set_aspect_ratio = robust_set_aspect_ratio
         ui._is_hardened = True
 
