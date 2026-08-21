@@ -167,7 +167,17 @@ def test_health_cdp_mode_healthy_without_local_profile():
     api_mod.VideoJob = MagicMock()
 
     p = ProductionFlowProvider(cdp_url="http://127.0.0.1:9222", project_id="proj_cdp")
-    with patch.dict(sys.modules, {"flow": flow_mod, "flow._exceptions": exc_mod, "flow._api": api_mod, "flow._storage": storage_mod}):
+    from auto_video_factory.flow_provider.cdp_endpoint import CDPEndpointStatus
+    mock_status = CDPEndpointStatus(
+        ready=True,
+        tcp_reachable=True,
+        version_valid=True,
+        targets_valid=True,
+        endpoint_url="http://127.0.0.1:9222",
+        browser_version="Chrome/130.0.0.0",
+    )
+    with patch.dict(sys.modules, {"flow": flow_mod, "flow._exceptions": exc_mod, "flow._api": api_mod, "flow._storage": storage_mod}), \
+         patch("auto_video_factory.flow_provider.provider.check_cdp_endpoint_detailed", return_value=mock_status):
         status = p.health()
 
     assert status.healthy is True

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .android import AndroidCDPManager, ForegroundPolicy
+from .cdp_endpoint import check_cdp_endpoint_detailed, verify_cdp_endpoint
 from .contract import FlowProvider
 from .models import (
     FlowAspectRatio,
@@ -644,11 +645,13 @@ class ProductionFlowProvider(FlowProvider):
         has_cdp = bool(self._cdp_url and self._cdp_url.strip())
         cdp_valid = False
         cdp_error = None
+        cdp_owner = None
         if has_cdp:
             cdp_str = self._cdp_url.strip()
             if not any(cdp_str.startswith(prefix) for prefix in ("http://", "https://", "ws://", "wss://", "localhost:", "127.0.0.1:")):
                 cdp_error = f"invalid_cdp_url: '{cdp_str}' must start with http://, https://, ws://, or wss://"
             elif self._android_manager:
+                cdp_owner = "ANDROID_ADB"
                 try:
                     forward_ok = self._android_manager.ensure_cdp_forward()
                     if not forward_ok:
@@ -659,8 +662,12 @@ class ProductionFlowProvider(FlowProvider):
                     log.debug("Android CDP manager forward check: %s", e)
                     cdp_error = f"android_cdp_forward_error: {e}"
             else:
-                cdp_valid = True
-
+                cdp_owner = "NATIVE_TERMUX_CHROMIUM"
+                status = check_cdp_endpoint_detailed(self._cdp_url, timeout=2.0)
+                if status.ready:
+                    cdp_valid = True
+                else:
+                    cdp_error = status.error or f"cdp_endpoint_unusable at {self._cdp_url}"
 
         if has_cdp:
             browser_ready = cdp_valid
@@ -678,9 +685,13 @@ class ProductionFlowProvider(FlowProvider):
             "captcha_bypass_disabled": True,
             "experimental_rpc_disabled": not EXPERIMENTAL_RPC_PROVIDER,
         }
+        if cdp_owner:
+            details["cdp_owner"] = cdp_owner
         if self._android_manager:
             details["android_cdp"] = True
             details["foreground_policy"] = self._foreground_policy.value
+        elif has_cdp:
+            details["android_cdp"] = False
         if not is_healthy:
             reasons = []
             if has_cdp and not cdp_valid:

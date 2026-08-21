@@ -381,6 +381,8 @@ class TestMobileLauncherScript:
         assert 'export AVF_LOCAL_PHONE="1"' in content
         assert 'export AVF_REQUIRE_AUTH="0"' in content
         assert 'export AVF_HOST="127.0.0.1"' in content
+        assert 'export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-native}"' in content
+        assert 'export FLOW_ANDROID_CDP="0"' in content
 
         # Root Cause B safety invariants:
         # 1. Server started first in background before browser launch
@@ -397,4 +399,5 @@ class TestMobileLauncherScript:
         assert server_launch_pos < am_start_pos, (
             "start_mobile_service.sh must start server before attempting to open browser with am start"
         )
+
 
