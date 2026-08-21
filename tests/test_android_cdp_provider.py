@@ -532,9 +532,31 @@ class TestAndroidChromeProductionBackend:
 
         with patch.object(transport, "_get_client", return_value=mock_client), \
              patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:45678"]):
-            dev = transport._get_device()
+            dev = transport._get_device(auto_connect=True)
             assert dev == mock_new_device
             mock_client.connect.assert_called_once_with("192.168.1.137:45678")
+
+    def test_probe_is_side_effect_free_when_no_devices(self):
+        """Probe must NOT initiate external adb connect or mDNS auto-connect."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+
+        with patch.object(transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:45678"]):
+            assert transport.probe() is False
+            mock_client.connect.assert_not_called()
+
+    def test_ambiguous_mdns_discovery_fails_closed(self):
+        """Multiple mDNS endpoints discovered without explicit serial must fail closed."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+
+        with patch.object(transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:45678", "192.168.1.138:45679"]):
+            assert transport._get_device(auto_connect=True) is None
+            mock_client.connect.assert_not_called()
 
     def test_pairing_port_not_used_for_connect(self):
         """TEST_PAIRING_PORT_NOT_USED_FOR_CONNECT: Ensure pairing port is never treated as connect port."""
@@ -561,7 +583,7 @@ class TestAndroidChromeProductionBackend:
 
         with patch.object(transport, "_get_client", return_value=mock_client), \
              patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["10.0.0.42:37777"]):
-            dev = transport._get_device()
+            dev = transport._get_device(auto_connect=True)
             assert dev == mock_new_device
 
     def test_pid_suffixed_socket(self):
@@ -680,7 +702,7 @@ class TestAndroidChromeProductionBackend:
 
         with patch.object(transport, "_get_client", return_value=mock_client), \
              patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:38555"]):
-            dev = transport._get_device()
+            dev = transport._get_device(auto_connect=True)
             assert dev == mock_device
             assert transport.serial is None  # Never required hard-coded serial
 
