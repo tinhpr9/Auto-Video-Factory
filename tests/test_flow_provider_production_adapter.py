@@ -1241,7 +1241,13 @@ def test_harden_client_ui_aspect_ratio_tab_selectors():
     """
     Test that _harden_client_ui installs a robust set_aspect_ratio method
     that correctly finds material icon ligatures, Vietnamese text, and data attributes.
+
+    Uses pytest.importorskip so standard dev test runs without the prod flow extra installed.
     """
+    # P3: guard with importorskip — test skips cleanly when prod flow extra absent
+    flow_pkg = pytest.importorskip("flow", reason="prod flow extra not installed; skip")
+    AspectRatio = flow_pkg.AspectRatio
+
     p = ProductionFlowProvider()
     mock_client = MagicMock()
     mock_ui = MagicMock()
@@ -1253,10 +1259,7 @@ def test_harden_client_ui_aspect_ratio_tab_selectors():
     p._harden_client_ui(mock_client, exc_mod)
     assert mock_ui._is_hardened is True
 
-    # Test execution of hardened set_aspect_ratio with a mock page
-    from flow import AspectRatio
-
-    # 1. Page with matching tab
+    # 1. Page with matching role tab → clicks and returns True
     mock_page = MagicMock()
     mock_tab = MagicMock()
     mock_tab.count = AsyncMock(return_value=1)
@@ -1267,7 +1270,7 @@ def test_harden_client_ui_aspect_ratio_tab_selectors():
     assert res is True
     mock_tab.click.assert_called_once()
 
-    # 2. Page where role matching fails but evaluate succeeds
+    # 2. Page where role matching fails but JS evaluate succeeds → True
     mock_page_eval = MagicMock()
     mock_page_eval.get_by_role.return_value.first.count = AsyncMock(return_value=0)
     mock_page_eval.locator.return_value.filter.return_value.first.count = AsyncMock(return_value=0)
@@ -1277,3 +1280,130 @@ def test_harden_client_ui_aspect_ratio_tab_selectors():
     res_eval = p._run(mock_ui.set_aspect_ratio(mock_page_eval, AspectRatio.PORTRAIT))
     assert res_eval is True
     mock_page_eval.evaluate.assert_called_once()
+
+
+def test_harden_client_ui_data_aspect_ratio_attribute():
+    """
+    P2: Verify that the JS evaluate selector string includes data-aspect-ratio comparison.
+    A button with data-aspect-ratio="portrait" must match portrait, not landscape/square.
+    Test is offline/mock-only — no paid Flow call.
+    """
+    flow_pkg = pytest.importorskip("flow", reason="prod flow extra not installed; skip")
+    AspectRatio = flow_pkg.AspectRatio
+
+    p = ProductionFlowProvider()
+    mock_client = MagicMock()
+    mock_ui = MagicMock()
+    mock_ui._is_hardened = False
+    mock_ui.open_settings_panel = AsyncMock()
+    mock_client._ui = mock_ui
+
+    exc_mod = _make_stub_exc_module()
+    p._harden_client_ui(mock_client, exc_mod)
+
+    # Simulate a page where role/text matching all fail, but evaluate sees a data-aspect-ratio button.
+    # We simulate JS returning True for portrait (attribute matches) and False for landscape/square.
+    mock_page = MagicMock()
+    mock_page.get_by_role.return_value.first.count = AsyncMock(return_value=0)
+    mock_page.locator.return_value.filter.return_value.first.count = AsyncMock(return_value=0)
+    mock_page.locator.return_value.first.count = AsyncMock(return_value=0)
+
+    # Portrait data-attribute matches → evaluate returns True
+    mock_page.evaluate = AsyncMock(return_value=True)
+    res = p._run(mock_ui.set_aspect_ratio(mock_page, AspectRatio.PORTRAIT))
+    assert res is True
+
+    # Verify the JS string passed to evaluate contains data-aspect-ratio
+    eval_script = mock_page.evaluate.call_args[0][0]
+    assert "data-aspect-ratio" in eval_script, (
+        "JS evaluate must include data-aspect-ratio attribute comparison"
+    )
+    assert "dataAspect" in eval_script, (
+        "JS evaluate must compare dataAspect variable for attribute matching"
+    )
+
+    # Landscape/square must NOT match a portrait data-attribute (evaluate returns False → UIError)
+    mock_page_mismatch = MagicMock()
+    mock_page_mismatch.get_by_role.return_value.first.count = AsyncMock(return_value=0)
+    mock_page_mismatch.locator.return_value.filter.return_value.first.count = AsyncMock(return_value=0)
+    mock_page_mismatch.locator.return_value.first.count = AsyncMock(return_value=0)
+    mock_page_mismatch.evaluate = AsyncMock(return_value=False)
+
+    import pytest as _pytest
+    with _pytest.raises(exc_mod.UIError):
+        p._run(mock_ui.set_aspect_ratio(mock_page_mismatch, AspectRatio.PORTRAIT))
+
+
+def test_harden_client_ui_fail_closed_raises_uierror():
+    """
+    P1: When no aspect ratio tab can be found, robust_set_aspect_ratio must raise UIError
+    so generate_video routes to USER_INTERACTION_REQUIRED, never silently submitting
+    with the wrong default aspect ratio.
+    """
+    flow_pkg = pytest.importorskip("flow", reason="prod flow extra not installed; skip")
+    AspectRatio = flow_pkg.AspectRatio
+
+    p = ProductionFlowProvider()
+    mock_client = MagicMock()
+    mock_ui = MagicMock()
+    mock_ui._is_hardened = False
+    mock_ui.open_settings_panel = AsyncMock()
+    mock_client._ui = mock_ui
+
+    exc_mod = _make_stub_exc_module()
+    p._harden_client_ui(mock_client, exc_mod)
+
+    # All Playwright locators return 0, JS evaluate returns False → must raise UIError
+    mock_page = MagicMock()
+    mock_page.get_by_role.return_value.first.count = AsyncMock(return_value=0)
+    mock_page.locator.return_value.filter.return_value.first.count = AsyncMock(return_value=0)
+    mock_page.locator.return_value.first.count = AsyncMock(return_value=0)
+    mock_page.evaluate = AsyncMock(return_value=False)
+
+    import pytest as _pytest
+    with _pytest.raises(exc_mod.UIError, match="Aspect ratio selection failed"):
+        p._run(mock_ui.set_aspect_ratio(mock_page, AspectRatio.PORTRAIT))
+
+
+def test_provider_does_not_proceed_when_portrait_selection_fails():
+    """
+    P1 integration: When the upstream flow-py client raises UIError during generate_video
+    (because our hardened set_aspect_ratio raised it after failing to select the aspect tab),
+    ProductionFlowProvider.generate_video must:
+    - return USER_INTERACTION_REQUIRED
+    - NOT emit a SUBMITTED result (no paid generation)
+
+    The real propagation path: set_aspect_ratio raises UIError inside flow-py's
+    FlowClient.generate_video, which propagates up to ProductionFlowProvider.generate_video's
+    except-UIError handler. We simulate this by making fake_client.generate_video raise UIError.
+    """
+    fake_client = _FakeFlowClient()
+    flow_mod, exc_mod, video_job_cls = _setup_fake_flow_env(fake_client)
+
+    # Simulate the real propagation: UIError raised inside flow-py's generate_video
+    # (from set_aspect_ratio failing) bubbles out to ProductionFlowProvider's except block.
+    ui_error = exc_mod.UIError("portrait tab not found — fail-closed test")
+    fake_client.generate_video = AsyncMock(side_effect=ui_error)
+
+    p = ProductionFlowProvider(project_id="proj_fail_closed")
+    req = FlowGenerationRequest(
+        job_id="job_fail_closed",
+        prompt="A sword cultivator awakens ancient sword intent",
+        model=FlowModel.OMNI_FLASH,
+        aspect_ratio=FlowAspectRatio.PORTRAIT_9_16,
+        count=1,
+    )
+
+    with patch.object(p, "_import_flow", return_value=(flow_mod.FlowClient, exc_mod, video_job_cls)):
+        with patch.object(p, "_get_client", return_value=fake_client):
+            result = p.generate_video(req)
+
+    # Must route to USER_INTERACTION_REQUIRED — never SUBMITTED
+    assert result.status == FlowJobStatus.USER_INTERACTION_REQUIRED, (
+        f"Expected USER_INTERACTION_REQUIRED, got {result.status}"
+    )
+    assert result.failure_class == FlowFailureClass.USER_INTERACTION_REQUIRED
+    assert "user interaction" in result.failure_message.lower()
+    # generate_video was called (and raised UIError) — the result must be the error path,
+    # not a successful submission that proceeded past the exception.
+    fake_client.generate_video.assert_called_once()

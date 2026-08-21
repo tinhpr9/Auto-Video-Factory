@@ -488,6 +488,10 @@ class ProductionFlowProvider(FlowProvider):
         """
         Enhance client._ui with robust multi-locale, material icon, and data-attribute tab selectors,
         and fail-closed behavior so portrait requests never silently degrade to landscape.
+
+        When the requested aspect ratio control cannot be positively selected, raises flow_exc.UIError
+        so the caller's except-UIError handler routes the job to USER_INTERACTION_REQUIRED instead of
+        continuing to a paid submission with an unverified (default/wrong) aspect ratio.
         """
         if not hasattr(client, "_ui") or client._ui is None:
             return
@@ -530,7 +534,8 @@ class ProductionFlowProvider(FlowProvider):
                 except Exception:
                     pass
 
-            # 2. Robust JS evaluate fallback searching text, aria-label, title, value, and data-aspect-ratio
+            # 2. Robust JS evaluate fallback searching text, aria-label, title, value, and
+            #    data-aspect-ratio attribute (P2: attribute value is now explicitly compared)
             target_terms = [t.lower() for t in label_map.get(ratio, [])]
             try:
                 clicked = await page.evaluate("""
@@ -541,8 +546,9 @@ class ProductionFlowProvider(FlowProvider):
                             const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
                             const title = (el.getAttribute('title') || '').trim().toLowerCase();
                             const val = (el.getAttribute('value') || '').trim().toLowerCase();
+                            const dataAspect = (el.getAttribute('data-aspect-ratio') || '').trim().toLowerCase();
                             for (const term of terms) {
-                                if (text === term || text.includes(term) || aria.includes(term) || title.includes(term) || val.includes(term)) {
+                                if (text === term || text.includes(term) || aria.includes(term) || title.includes(term) || val.includes(term) || dataAspect === term || dataAspect.includes(term)) {
                                     el.click();
                                     return true;
                                 }
@@ -557,8 +563,17 @@ class ProductionFlowProvider(FlowProvider):
             except Exception:
                 pass
 
-            log.warning("Could not find aspect ratio tab for %s", getattr(ratio, "value", ratio))
-            return False
+            # Fail closed (P1): raise UIError so generate_video routes to USER_INTERACTION_REQUIRED.
+            # NEVER return False and allow upstream generate_video to submit with an unverified
+            # (potentially wrong default) aspect ratio.
+            ratio_str = getattr(ratio, "value", str(ratio))
+            log.warning(
+                "Could not find aspect ratio tab for %s — raising UIError (fail-closed)", ratio_str
+            )
+            raise flow_exc.UIError(
+                f"Aspect ratio selection failed for {ratio_str!r}: no matching tab or button found. "
+                "Cannot confirm aspect before generation. Requires user interaction."
+            )
 
         ui.set_aspect_ratio = robust_set_aspect_ratio
         ui._is_hardened = True
