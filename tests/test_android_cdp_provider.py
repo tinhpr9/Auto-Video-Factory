@@ -8,8 +8,13 @@ import pytest
 
 from auto_video_factory.flow_provider.android import (
     AndroidCDPManager,
+    CDPTransport,
+    CDPTransportMode,
+    DirectSocketTransport,
     ForegroundPolicy,
+    LocalAdbTcpTransport,
     SYSTEM_PACKAGES,
+    WirelessAdbTransport,
 )
 from auto_video_factory.flow_provider.models import (
     FlowAspectRatio,
@@ -244,4 +249,146 @@ class TestProductionFlowProviderAndroidCDP:
             assert health.browser_ready is False
             assert health.authenticated is False
             assert "android_cdp_forward_failed" in health.details.get("reason", "")
+
+
+class TestCDPTransports:
+    """Unit tests for the modular CDPTransport implementations."""
+
+    def test_direct_socket_transport_probe_fails_gracefully_on_error(self):
+        transport = DirectSocketTransport(cdp_port=9222)
+        with patch("socket.socket") as mock_sock_cls:
+            mock_sock = MagicMock()
+            mock_sock.__enter__.return_value = mock_sock
+            mock_sock.connect.side_effect = PermissionError("SELinux denied")
+            mock_sock_cls.return_value = mock_sock
+
+            assert transport.probe() is False
+            assert transport.health()["status"] == "unsupported"
+            assert "SELinux" in transport.health().get("reason", "")
+
+    def test_direct_socket_transport_probe_succeeds(self):
+        transport = DirectSocketTransport(cdp_port=9222)
+        with patch("socket.socket") as mock_sock_cls:
+            mock_sock = MagicMock()
+            mock_sock.__enter__.return_value = mock_sock
+            mock_sock.connect.return_value = None
+            mock_sock_cls.return_value = mock_sock
+
+            assert transport.probe() is True
+            assert transport.health()["status"] == "available"
+
+    def test_local_adb_tcp_transport_probe_succeeds_when_connected(self):
+        transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)
+        mock_device = MagicMock(serial="127.0.0.1:5555")
+        with patch.object(transport, "_get_device", return_value=mock_device):
+            assert transport.probe() is True
+            assert transport.health()["status"] == "available"
+
+    def test_local_adb_tcp_transport_probe_fails_when_no_device(self):
+        transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)
+        with patch.object(transport, "_get_device", return_value=None), \
+             patch.object(transport, "_attempt_connect", return_value=False):
+            assert transport.probe() is False
+            assert transport.health()["status"] == "disconnected"
+
+    def test_local_adb_tcp_transport_switch_to_tcp_mode(self):
+        transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)
+        mock_source_device = MagicMock()
+        mock_source_device.tcpip.return_value = "restarting in TCP mode port: 5555"
+
+        result = transport.enable_tcp_mode_from_device(mock_source_device)
+        assert result is True
+        mock_source_device.tcpip.assert_called_once_with(5555)
+
+    def test_wireless_adb_transport_probe_succeeds(self):
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_device = MagicMock(serial="192.168.1.57:37453")
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = [mock_device]
+
+        with patch.object(transport, "_get_client", return_value=mock_client):
+            assert transport.probe() is True
+            assert transport.health()["status"] == "available"
+
+    def test_wireless_adb_transport_probe_skips_localhost_tcp(self):
+        # Wireless transport skips 127.0.0.1 (which belongs to LocalAdbTcpTransport)
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_device = MagicMock(serial="127.0.0.1:5555")
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = [mock_device]
+
+        with patch.object(transport, "_get_client", return_value=mock_client):
+            assert transport.probe() is False
+
+
+class TestTransportRouter:
+    """Unit tests for AndroidCDPManager transport routing and deterministic selection."""
+
+    def test_manager_selects_direct_socket_first_if_available(self):
+        manager = AndroidCDPManager()
+        mock_direct = MagicMock(spec=DirectSocketTransport)
+        mock_direct.probe.return_value = True
+        mock_direct.mode = CDPTransportMode.DIRECT_LOCAL_SOCKET
+
+        mock_local_adb = MagicMock(spec=LocalAdbTcpTransport)
+        mock_local_adb.probe.return_value = True
+
+        with patch.object(manager, "_get_direct_transport", return_value=mock_direct), \
+             patch.object(manager, "_get_local_tcp_transport", return_value=mock_local_adb):
+            selected = manager.select_transport()
+            assert selected == mock_direct
+            assert manager.get_active_transport_mode() == CDPTransportMode.DIRECT_LOCAL_SOCKET
+
+    def test_manager_falls_back_to_local_adb_tcp(self):
+        manager = AndroidCDPManager()
+        mock_direct = MagicMock(spec=DirectSocketTransport)
+        mock_direct.probe.return_value = False
+
+        mock_local_adb = MagicMock(spec=LocalAdbTcpTransport)
+        mock_local_adb.probe.return_value = True
+        mock_local_adb.mode = CDPTransportMode.LOCAL_ADB_TCP
+
+        with patch.object(manager, "_get_direct_transport", return_value=mock_direct), \
+             patch.object(manager, "_get_local_tcp_transport", return_value=mock_local_adb):
+            selected = manager.select_transport()
+            assert selected == mock_local_adb
+            assert manager.get_active_transport_mode() == CDPTransportMode.LOCAL_ADB_TCP
+
+    def test_manager_falls_back_to_wireless_adb(self):
+        manager = AndroidCDPManager()
+        mock_direct = MagicMock(spec=DirectSocketTransport)
+        mock_direct.probe.return_value = False
+
+        mock_local_adb = MagicMock(spec=LocalAdbTcpTransport)
+        mock_local_adb.probe.return_value = False
+
+        mock_wireless = MagicMock(spec=WirelessAdbTransport)
+        mock_wireless.probe.return_value = True
+        mock_wireless.mode = CDPTransportMode.WIRELESS_ADB
+
+        with patch.object(manager, "_get_direct_transport", return_value=mock_direct), \
+             patch.object(manager, "_get_local_tcp_transport", return_value=mock_local_adb), \
+             patch.object(manager, "_get_wireless_transport", return_value=mock_wireless):
+            selected = manager.select_transport()
+            assert selected == mock_wireless
+            assert manager.get_active_transport_mode() == CDPTransportMode.WIRELESS_ADB
+
+    def test_manager_returns_user_interaction_required_when_all_fail(self):
+        manager = AndroidCDPManager()
+        mock_direct = MagicMock(spec=DirectSocketTransport)
+        mock_direct.probe.return_value = False
+
+        mock_local_adb = MagicMock(spec=LocalAdbTcpTransport)
+        mock_local_adb.probe.return_value = False
+
+        mock_wireless = MagicMock(spec=WirelessAdbTransport)
+        mock_wireless.probe.return_value = False
+
+        with patch.object(manager, "_get_direct_transport", return_value=mock_direct), \
+             patch.object(manager, "_get_local_tcp_transport", return_value=mock_local_adb), \
+             patch.object(manager, "_get_wireless_transport", return_value=mock_wireless):
+            selected = manager.select_transport()
+            assert selected is None
+            assert manager.get_active_transport_mode() == CDPTransportMode.USER_INTERACTION_REQUIRED
+
 
