@@ -65,6 +65,9 @@ def discover_device_devtools_socket(device) -> str:
     Authoritative discovery of Android Chrome abstract DevTools Unix socket.
     Scans /proc/net/unix on the given device for @chrome_devtools_remote
     or @chrome_devtools_remote_<PID>. Returns discovered socket name without '@'.
+    Only accepts 'chrome_devtools_remote' basename (with optional '_<digits>' suffix)
+    to prevent accidentally forwarding to unrelated WebView sockets
+    (e.g. @webview_devtools_remote_<pid>).
     Falls back to 'chrome_devtools_remote'.
     """
     if not device:
@@ -73,12 +76,14 @@ def discover_device_devtools_socket(device) -> str:
         stdout = device.shell("cat /proc/net/unix")
         if stdout:
             for line in stdout.splitlines():
-                if "chrome_devtools_remote" in line or "devtools_remote" in line:
-                    parts = line.strip().split()
-                    if parts:
-                        socket_name = parts[-1]
-                        if socket_name.startswith("@"):
-                            return socket_name[1:]
+                if "chrome_devtools_remote" not in line:
+                    continue
+                parts = line.strip().split()
+                if parts:
+                    raw = parts[-1]
+                    socket_name = raw[1:] if raw.startswith("@") else raw
+                    # Accept only: chrome_devtools_remote or chrome_devtools_remote_<digits>
+                    if re.fullmatch(r"chrome_devtools_remote(_\d+)?", socket_name):
                         return socket_name
     except Exception as e:
         log.warning("Socket discovery failed on device %s: %s", getattr(device, "serial", "unknown"), e)
@@ -434,16 +439,17 @@ class AndroidCDPManager:
 
     def get_device(self):
         """
-        Resolve the active AdbDevice.
+        Resolve the active AdbDevice for foreground management and direct forward fallbacks.
         If serial is explicitly configured, returns that device.
-        If not, selects the single connected device, or returns None if 0 devices.
-        If multiple devices are found without a configured serial, fails closed and returns None.
+        If not, filters out local-TCP entries (127.0.0.1:*) to be consistent with
+        WirelessAdbTransport._get_device(), then selects the single non-local device.
+        Fails closed (returns None) when 0 or >1 non-local devices exist without a serial.
         """
         try:
             client = self._get_client()
             if self.serial:
                 return client.device(serial=self.serial)
-            devices = client.device_list()
+            devices = [d for d in client.device_list() if not d.serial.startswith("127.0.0.1:")]
             if len(devices) == 1:
                 return devices[0]
             if len(devices) > 1:
@@ -481,10 +487,26 @@ class AndroidCDPManager:
         """
         Verify or establish the port forward for Chrome CDP to 127.0.0.1:cdp_port
         using the active or newly selected transport.
+
+        Transport selection hierarchy:
+          1. select_transport() — picks any pre-probed (already-connected) transport.
+          2. If none available, explicitly attempt LocalAdbTcpTransport.ensure() —
+             this allows auto-connect via _attempt_connect() even though probe() is
+             side-effect-free and returns False before the first connection is made.
+          3. Fall back to direct device-level forward via get_device().
         """
         transport = self.select_transport()
         if transport is not None:
             return transport.ensure()
+
+        # Attempt local TCP auto-connect explicitly (probe() is side-effect-free so
+        # select_transport() won't select this transport until ensure() establishes it).
+        local_tcp = self._get_local_tcp_transport()
+        if local_tcp.ensure():
+            self._active_transport = local_tcp
+            self._active_mode = CDPTransportMode.LOCAL_ADB_TCP
+            log.info("LocalAdbTcp: auto-connected via ensure() fallback path.")
+            return True
 
         # Fallback to direct device-level forward if device is already resolved
         device = self.get_device()

@@ -31,6 +31,7 @@ class TestAndroidCDPManager:
     def test_is_adb_connected_single_device(self):
         manager = AndroidCDPManager()
         mock_device = MagicMock()
+        mock_device.serial = "192.168.1.57:37453"
         mock_client = MagicMock()
         mock_client.device_list.return_value = [mock_device]
 
@@ -47,6 +48,22 @@ class TestAndroidCDPManager:
             assert manager.is_adb_connected() is False
             assert manager.get_device() is None
 
+    def test_get_device_excludes_local_tcp_serials_from_filter(self):
+        """Thread 4: get_device() should filter 127.0.0.1:* serials like WirelessAdbTransport."""
+        manager = AndroidCDPManager()
+        local_dev = MagicMock()
+        local_dev.serial = "127.0.0.1:5555"
+        wireless_dev = MagicMock()
+        wireless_dev.serial = "192.168.1.50:37453"
+        mock_client = MagicMock()
+        # Both local and wireless present — without filtering this would be 2 devices → None
+        # With filtering, local TCP is excluded, leaving only 1 wireless device
+        mock_client.device_list.return_value = [local_dev, wireless_dev]
+
+        with patch.object(manager, "_get_client", return_value=mock_client):
+            device = manager.get_device()
+            assert device == wireless_dev
+
     def test_get_device_multiple_devices_fails_closed_on_ambiguity(self):
         """Finding D: Multi-device ambiguity must fail closed (return None) to prevent misrouting."""
         manager = AndroidCDPManager()
@@ -58,6 +75,41 @@ class TestAndroidCDPManager:
         with patch.object(manager, "_get_client", return_value=mock_client):
             device = manager.get_device()
             assert device is None
+
+    def test_ensure_cdp_forward_local_tcp_auto_connect_when_no_transport_selected(self):
+        """Thread 1/3: ensure_cdp_forward() must try local_tcp.ensure() when select_transport() returns None."""
+        manager = AndroidCDPManager(cdp_port=9222)
+        mock_local_tcp = MagicMock(spec=LocalAdbTcpTransport)
+        mock_local_tcp.ensure.return_value = True
+
+        with patch.object(manager, "select_transport", return_value=None), \
+             patch.object(manager, "_get_local_tcp_transport", return_value=mock_local_tcp):
+            result = manager.ensure_cdp_forward()
+            assert result is True
+            mock_local_tcp.ensure.assert_called_once()
+
+    def test_socket_discovery_rejects_webview_socket(self):
+        """Thread 2: discover_device_devtools_socket must NOT accept webview_devtools_remote_<pid>."""
+        from auto_video_factory.flow_provider.android import discover_device_devtools_socket
+        mock_device = MagicMock()
+        # WebView socket listed BEFORE Chrome socket
+        mock_device.shell.return_value = (
+            "0000000000000000: 00000002 00000000 00010000 0001 01 11111 @webview_devtools_remote_9999\n"
+            "0000000000000000: 00000002 00000000 00010000 0001 01 22222 @chrome_devtools_remote_1234\n"
+        )
+        result = discover_device_devtools_socket(mock_device)
+        assert result == "chrome_devtools_remote_1234", f"Expected chrome socket, got: {result}"
+
+    def test_socket_discovery_rejects_generic_devtools_remote(self):
+        """Thread 2: discover_device_devtools_socket must reject sockets that don't start with chrome_devtools_remote."""
+        from auto_video_factory.flow_provider.android import discover_device_devtools_socket
+        mock_device = MagicMock()
+        mock_device.shell.return_value = (
+            "0000000000000000: 00000002 00000000 00010000 0001 01 33333 @some_other_devtools_remote\n"
+        )
+        result = discover_device_devtools_socket(mock_device)
+        # Must fall back to default when no valid chrome socket found
+        assert result == "chrome_devtools_remote"
 
     def test_get_device_explicit_serial(self):
         manager = AndroidCDPManager(serial="custom-serial-123")
