@@ -114,7 +114,8 @@ class DirectSocketTransport(CDPTransport):
     def ensure(self) -> bool:
         if not self.probe():
             return False
-        return True
+        from .cdp_endpoint import verify_cdp_endpoint
+        return verify_cdp_endpoint(self.endpoint, timeout=1.0)
 
     def health(self) -> dict:
         available = self.probe()
