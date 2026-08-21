@@ -47,7 +47,8 @@ class TestAndroidCDPManager:
             assert manager.is_adb_connected() is False
             assert manager.get_device() is None
 
-    def test_get_device_multiple_devices_selects_first_with_warning(self):
+    def test_get_device_multiple_devices_fails_closed_on_ambiguity(self):
+        """Finding D: Multi-device ambiguity must fail closed (return None) to prevent misrouting."""
         manager = AndroidCDPManager()
         mock_dev1 = MagicMock(serial="192.168.1.57:37453")
         mock_dev2 = MagicMock(serial="emulator-5554")
@@ -56,7 +57,7 @@ class TestAndroidCDPManager:
 
         with patch.object(manager, "_get_client", return_value=mock_client):
             device = manager.get_device()
-            assert device == mock_dev1
+            assert device is None
 
     def test_get_device_explicit_serial(self):
         manager = AndroidCDPManager(serial="custom-serial-123")
@@ -89,8 +90,10 @@ class TestAndroidCDPManager:
         )
         mock_device.forward_list.return_value = [mock_forward]
 
-        with patch.object(manager, "get_device", return_value=mock_device), \
-             patch.object(manager, "discover_chrome_devtools_socket", return_value="chrome_devtools_remote"):
+        with patch.object(manager, "select_transport", return_value=None), \
+             patch.object(manager, "get_device", return_value=mock_device), \
+             patch.object(manager, "discover_chrome_devtools_socket", return_value="chrome_devtools_remote"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
             assert manager.ensure_cdp_forward() is True
             mock_device.forward.assert_not_called()
 
@@ -99,8 +102,10 @@ class TestAndroidCDPManager:
         mock_device = MagicMock()
         mock_device.forward_list.return_value = []
 
-        with patch.object(manager, "get_device", return_value=mock_device), \
-             patch.object(manager, "discover_chrome_devtools_socket", return_value="chrome_devtools_remote"):
+        with patch.object(manager, "select_transport", return_value=None), \
+             patch.object(manager, "get_device", return_value=mock_device), \
+             patch.object(manager, "discover_chrome_devtools_socket", return_value="chrome_devtools_remote"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
             assert manager.ensure_cdp_forward() is True
             mock_device.forward.assert_called_once_with(
                 "tcp:9222", "localabstract:chrome_devtools_remote"
@@ -285,11 +290,68 @@ class TestCDPTransports:
             assert transport.health()["status"] == "available"
 
     def test_local_adb_tcp_transport_probe_fails_when_no_device(self):
+        """Finding C: probe() must be side-effect-free and NOT call _attempt_connect()."""
         transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)
         with patch.object(transport, "_get_device", return_value=None), \
-             patch.object(transport, "_attempt_connect", return_value=False):
+             patch.object(transport, "_attempt_connect") as mock_connect:
             assert transport.probe() is False
             assert transport.health()["status"] == "disconnected"
+            mock_connect.assert_not_called()
+
+    def test_local_adb_tcp_transport_ensure_attempts_connect_when_needed(self):
+        """Finding C: ensure() is permitted to establish connection via _attempt_connect()."""
+        transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)
+        mock_dev = MagicMock(serial="127.0.0.1:5555")
+        mock_dev.forward_list.return_value = []
+        with patch.object(transport, "_get_device", side_effect=[None, mock_dev]), \
+             patch.object(transport, "_attempt_connect", return_value=True) as mock_connect, \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            assert transport.ensure() is True
+            mock_connect.assert_called_once()
+            mock_dev.forward.assert_called_once_with("tcp:9222", "localabstract:chrome_devtools_remote")
+
+    def test_pid_suffixed_socket_forward_in_transports(self):
+        """Finding B: Transports must dynamically discover and forward PID-suffixed sockets (e.g. chrome_devtools_remote_1234)."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        mock_device = MagicMock(serial="192.168.1.57:37453")
+        mock_device.forward_list.return_value = []
+        with patch.object(transport, "_get_device", return_value=mock_device), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote_1234"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            assert transport.ensure() is True
+            mock_device.forward.assert_called_once_with(
+                "tcp:9222", "localabstract:chrome_devtools_remote_1234"
+            )
+
+    def test_stale_forward_replacement(self):
+        """Finding B: If existing forward points to a stale socket, ensure() must replace it with the discovered socket."""
+        transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)
+        mock_dev = MagicMock(serial="127.0.0.1:5555")
+        # Stale forward pointing to old socket
+        stale_forward = SimpleNamespace(local="tcp:9222", remote="localabstract:chrome_devtools_remote_9999")
+        mock_dev.forward_list.return_value = [stale_forward]
+
+        with patch.object(transport, "_get_device", return_value=mock_dev), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote_1234"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            assert transport.ensure() is True
+            # Must replace with new socket
+            mock_dev.forward.assert_called_once_with(
+                "tcp:9222", "localabstract:chrome_devtools_remote_1234"
+            )
+
+    def test_wireless_multi_device_ambiguity_fails_closed(self):
+        """Finding D: Wireless transport with multiple eligible devices and no serial must fail closed."""
+        transport = WirelessAdbTransport(cdp_port=9222)
+        dev1 = MagicMock(serial="192.168.1.50:5555")
+        dev2 = MagicMock(serial="192.168.1.51:5555")
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = [dev1, dev2]
+
+        with patch.object(transport, "_get_client", return_value=mock_client):
+            assert transport._get_device() is None
+            assert transport.probe() is False
 
     def test_local_adb_tcp_transport_switch_to_tcp_mode(self):
         transport = LocalAdbTcpTransport(tcp_port=5555, cdp_port=9222)

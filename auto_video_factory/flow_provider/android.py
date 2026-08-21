@@ -21,6 +21,8 @@ import re
 import time
 from typing import Iterator, Optional, Tuple
 
+from .cdp_endpoint import verify_cdp_endpoint
+
 log = logging.getLogger(__name__)
 
 DEFAULT_ADB_HOST = "127.0.0.1"
@@ -56,6 +58,31 @@ class CDPTransportMode(str, enum.Enum):
     LOCAL_ADB_TCP = "local_adb_tcp"
     WIRELESS_ADB = "wireless_adb"
     USER_INTERACTION_REQUIRED = "user_interaction_required"
+
+
+def discover_device_devtools_socket(device) -> str:
+    """
+    Authoritative discovery of Android Chrome abstract DevTools Unix socket.
+    Scans /proc/net/unix on the given device for @chrome_devtools_remote
+    or @chrome_devtools_remote_<PID>. Returns discovered socket name without '@'.
+    Falls back to 'chrome_devtools_remote'.
+    """
+    if not device:
+        return "chrome_devtools_remote"
+    try:
+        stdout = device.shell("cat /proc/net/unix")
+        if stdout:
+            for line in stdout.splitlines():
+                if "chrome_devtools_remote" in line or "devtools_remote" in line:
+                    parts = line.strip().split()
+                    if parts:
+                        socket_name = parts[-1]
+                        if socket_name.startswith("@"):
+                            return socket_name[1:]
+                        return socket_name
+    except Exception as e:
+        log.warning("Socket discovery failed on device %s: %s", getattr(device, "serial", "unknown"), e)
+    return "chrome_devtools_remote"
 
 
 class CDPTransport:
@@ -114,7 +141,6 @@ class DirectSocketTransport(CDPTransport):
     def ensure(self) -> bool:
         if not self.probe():
             return False
-        from .cdp_endpoint import verify_cdp_endpoint
         return verify_cdp_endpoint(self.endpoint, timeout=1.0)
 
     def health(self) -> dict:
@@ -185,12 +211,12 @@ class LocalAdbTcpTransport(CDPTransport):
             return False
 
     def probe(self) -> bool:
+        """Lightweight, side-effect-free check if local ADB TCP device is already connected."""
         dev = self._get_device()
-        if dev is not None:
-            return True
-        return self._attempt_connect()
+        return dev is not None
 
     def ensure(self) -> bool:
+        """Establish or verify local ADB TCP connection and forward discovered DevTools socket."""
         dev = self._get_device()
         if not dev and not self._attempt_connect():
             return False
@@ -198,15 +224,19 @@ class LocalAdbTcpTransport(CDPTransport):
         if not dev:
             return False
 
+        socket_name = discover_device_devtools_socket(dev)
         target_local = f"tcp:{self.cdp_port}"
-        target_remote = "localabstract:chrome_devtools_remote"
+        target_remote = f"localabstract:{socket_name}"
         try:
             for item in dev.forward_list():
                 if item.local == target_local and item.remote == target_remote:
-                    return True
+                    if verify_cdp_endpoint(self.endpoint, timeout=1.0):
+                        return True
+                    break
+
             dev.forward(target_local, target_remote)
-            log.info("LocalAdbTcp: Forwarded CDP port %d to %s", self.cdp_port, target_remote)
-            return True
+            log.info("LocalAdbTcp: Forwarded CDP port %d to %s on %s", self.cdp_port, target_remote, dev.serial)
+            return verify_cdp_endpoint(self.endpoint, timeout=1.5)
         except Exception as e:
             log.error("LocalAdbTcp: Forward failed on port %d: %s", self.cdp_port, e)
             return False
@@ -254,10 +284,18 @@ class WirelessAdbTransport(CDPTransport):
                 d for d in client.device_list()
                 if not d.serial.startswith("127.0.0.1:")
             ]
-            if devices:
+            if len(devices) == 1:
                 return devices[0]
+            if len(devices) > 1:
+                log.error(
+                    "Multiple wireless/USB ADB devices connected (%s) with no explicit serial configured. "
+                    "Failing closed to prevent ambiguous routing. Specify serial via config.",
+                    [d.serial for d in devices],
+                )
+                return None
             return None
-        except Exception:
+        except Exception as e:
+            log.debug("Failed to resolve wireless ADB device: %s", e)
             return None
 
     def probe(self) -> bool:
@@ -268,15 +306,20 @@ class WirelessAdbTransport(CDPTransport):
         dev = self._get_device()
         if not dev:
             return False
+
+        socket_name = discover_device_devtools_socket(dev)
         target_local = f"tcp:{self.cdp_port}"
-        target_remote = "localabstract:chrome_devtools_remote"
+        target_remote = f"localabstract:{socket_name}"
         try:
             for item in dev.forward_list():
                 if item.local == target_local and item.remote == target_remote:
-                    return True
+                    if verify_cdp_endpoint(self.endpoint, timeout=1.0):
+                        return True
+                    break
+
             dev.forward(target_local, target_remote)
-            log.info("WirelessAdb: Forwarded CDP port %d to %s", self.cdp_port, target_remote)
-            return True
+            log.info("WirelessAdb: Forwarded CDP port %d to %s on %s", self.cdp_port, target_remote, dev.serial)
+            return verify_cdp_endpoint(self.endpoint, timeout=1.5)
         except Exception as e:
             log.error("WirelessAdb: Forward failed on port %d: %s", self.cdp_port, e)
             return False
@@ -394,21 +437,24 @@ class AndroidCDPManager:
         Resolve the active AdbDevice.
         If serial is explicitly configured, returns that device.
         If not, selects the single connected device, or returns None if 0 devices.
+        If multiple devices are found without a configured serial, fails closed and returns None.
         """
         try:
             client = self._get_client()
             if self.serial:
                 return client.device(serial=self.serial)
             devices = client.device_list()
-            if not devices:
-                return None
+            if len(devices) == 1:
+                return devices[0]
             if len(devices) > 1:
-                log.warning(
-                    "Multiple ADB devices found (%d). Selecting first device: %s",
+                log.error(
+                    "Multiple ADB devices found (%d: %s) with no explicit serial configured. "
+                    "Failing closed to prevent ambiguous routing. Set ANDROID_SERIAL or configure serial.",
                     len(devices),
-                    devices[0].serial,
+                    [d.serial for d in devices],
                 )
-            return devices[0]
+                return None
+            return None
         except Exception as e:
             log.debug("Failed to resolve ADB device: %s", e)
             return None
@@ -429,25 +475,7 @@ class AndroidCDPManager:
         device = self.get_device()
         if not device:
             return None
-
-        try:
-            stdout = device.shell("cat /proc/net/unix")
-            if not stdout:
-                return "chrome_devtools_remote"
-
-            # Look for @chrome_devtools_remote patterns
-            for line in stdout.splitlines():
-                if "chrome_devtools_remote" in line or "devtools_remote" in line:
-                    parts = line.strip().split()
-                    if parts:
-                        socket_name = parts[-1]
-                        if socket_name.startswith("@"):
-                            return socket_name[1:]  # remove '@' for localabstract
-                        return socket_name
-            return "chrome_devtools_remote"
-        except Exception as e:
-            log.warning("Socket discovery failed: %s", e)
-            return "chrome_devtools_remote"
+        return discover_device_devtools_socket(device)
 
     def ensure_cdp_forward(self) -> bool:
         """
@@ -464,19 +492,21 @@ class AndroidCDPManager:
             log.warning("Cannot forward CDP: no ADB device or direct transport connected.")
             return False
 
-        target_local = f"tcp:{self.cdp_port}"
         socket_name = self.discover_chrome_devtools_socket() or "chrome_devtools_remote"
+        target_local = f"tcp:{self.cdp_port}"
         target_remote = f"localabstract:{socket_name}"
 
         try:
             for item in device.forward_list():
                 if item.local == target_local and item.remote == target_remote:
-                    log.debug("Existing CDP forward active: %s -> %s", item.local, item.remote)
-                    return True
+                    if verify_cdp_endpoint(f"http://127.0.0.1:{self.cdp_port}", timeout=1.0):
+                        log.debug("Existing CDP forward active & verified: %s -> %s", item.local, item.remote)
+                        return True
+                    break
 
             device.forward(target_local, target_remote)
             log.info("Forwarded CDP port %d to %s", self.cdp_port, target_remote)
-            return True
+            return verify_cdp_endpoint(f"http://127.0.0.1:{self.cdp_port}", timeout=1.5)
         except Exception as e:
             log.error("Failed to forward CDP port %d: %s", self.cdp_port, e)
             return False
