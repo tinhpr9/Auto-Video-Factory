@@ -335,13 +335,6 @@ class ProductionFlowProvider(FlowProvider):
             self._android_manager: Optional[AndroidCDPManager] = android_manager
         elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("1", "true", "yes"):
             self._android_manager = AndroidCDPManager(foreground_policy=self._foreground_policy)
-        elif (
-            os.getenv("FLOW_ANDROID_CDP") is None
-            and (os.path.exists("/data/data/com.termux") or "ANDROID_ROOT" in os.environ)
-            and self._cdp_url
-            and any(h in self._cdp_url for h in ("127.0.0.1", "localhost", "9222"))
-        ):
-            self._android_manager = AndroidCDPManager(foreground_policy=self._foreground_policy)
         else:
             self._android_manager = None
 

@@ -32,6 +32,8 @@ fi
 if [ -x "$ADB_BIN" ]; then
     echo "📱 Kiểm tra ADB & Chrome DevTools..."
     "$ADB_BIN" start-server >/dev/null 2>&1 || true
+    # Attempt local loopback connection for 4G-only mode
+    "$ADB_BIN" connect 127.0.0.1:5555 >/dev/null 2>&1 || true
     # Attempt forwarding
     "$ADB_BIN" forward tcp:9222 localabstract:chrome_devtools_remote >/dev/null 2>&1 || true
 fi
