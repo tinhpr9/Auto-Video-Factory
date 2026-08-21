@@ -81,6 +81,40 @@ FLOW_MODEL_MAP: dict[str, FlowModel] = {
 }
 
 
+def resolve_flow_model(model: FlowModel | str) -> FlowModel:
+    """
+    Authoritatively resolve and validate a FlowModel from an enum, value, member name, or alias.
+    Fails closed (raises ValueError) if model cannot be deterministically resolved.
+    """
+    if isinstance(model, FlowModel):
+        return model
+    if isinstance(model, str):
+        # 1. Check exact enum value
+        try:
+            return FlowModel(model)
+        except ValueError:
+            pass
+
+        # 2. Check FLOW_MODEL_MAP aliases (e.g. 'omni-flash', 'veo-3.1-fast')
+        if model in FLOW_MODEL_MAP:
+            return FLOW_MODEL_MAP[model]
+
+        # 3. Check FLOW_MODE_TO_MODEL modes (e.g. 'flow_balanced', 'flow_economy')
+        if model in FLOW_MODE_TO_MODEL:
+            return FLOW_MODE_TO_MODEL[model]
+
+        # 4. Check enum member names (e.g. 'OMNI_FLASH', 'VEO_3_1_FAST')
+        upper = model.strip().upper()
+        if upper in FlowModel.__members__:
+            return FlowModel[upper]
+
+        raise ValueError(
+            f"Invalid or unsupported Flow model: {model!r}. "
+            f"Must be a valid FlowModel enum, value, member name, or supported alias in {list(FLOW_MODEL_MAP.keys())}."
+        )
+    raise ValueError(f"Invalid model type: {type(model).__name__}. Expected FlowModel or str.")
+
+
 
 @dataclass
 class FlowModelInfo:
@@ -133,11 +167,7 @@ class FlowGenerationRequest:
         if not self.client_request_id:
             self.client_request_id = self.job_id
 
-        if isinstance(self.model, str):
-            try:
-                self.model = FlowModel(self.model)
-            except ValueError:
-                self.model = FlowModel[self.model.upper()] if self.model.upper() in FlowModel.__members__ else FlowModel.VEO_3_1_FAST
+        self.model = resolve_flow_model(self.model)
         if isinstance(self.aspect_ratio, str):
             if self.aspect_ratio in ("9:16", "PORTRAIT", "portrait"):
                 self.aspect_ratio = FlowAspectRatio.PORTRAIT_9_16

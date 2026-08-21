@@ -128,6 +128,7 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
             MockFlowProvider,
             ProductionFlowProvider,
             FLOW_MODEL_MAP,
+            resolve_flow_model,
         )
         storage_path = Path(args.flow_storage_path) if args.flow_storage_path else Path(args.output) / "flow_jobs.json"
         output_scenes_dir = Path(args.output) / "scenes"
@@ -148,7 +149,7 @@ def build_factory_from_args(args: argparse.Namespace) -> VideoFactory:
             output_dir=output_scenes_dir,
         )
 
-        explicit_model = FLOW_MODEL_MAP.get(args.flow_model) if args.flow_model else None
+        explicit_model = resolve_flow_model(args.flow_model) if args.flow_model else None
         visual_provider = FlowVisualProvider(
             controller=controller,
             model=explicit_model,
