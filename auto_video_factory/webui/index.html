@@ -176,7 +176,13 @@
     const response = await apiFetch('/api/config');
     if (!response.ok) throw new Error('config');
     const config = await response.json();
-    providerBadge.textContent = config.provider === 'openai' ? 'AI thật' : 'Offline demo';
+    if (config.provider === 'flow') {
+      providerBadge.textContent = 'FLOW';
+    } else if (config.provider === 'openai') {
+      providerBadge.textContent = 'AI thật';
+    } else {
+      providerBadge.textContent = 'Offline demo';
+    }
     fillSelect('duration', config.durations, item => String(item), item => `${item} giây`, '60');
     fillSelect('voice', config.voices, item => item.id, item => item.label, 'marin');
     fillSelect('style', config.styles, item => item.id, item => item.label, 'xianxia-cinematic');
