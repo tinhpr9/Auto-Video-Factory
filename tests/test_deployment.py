@@ -44,3 +44,25 @@ def test_deploy_env_example_contains_names_only_not_real_secrets():
     assert "AVF_ACCESS_CODE=" in env_example
     assert "sk-" not in env_example
     assert "correct-horse-42" not in env_example
+
+
+def test_start_mobile_service_script_contains_supervisor_lifecycle():
+    script = Path("start_mobile_service.sh").read_text(encoding="utf-8")
+    assert "auto_video_factory.supervisor" in script
+    assert "start" in script
+    assert "stop" in script
+    assert "restart" in script
+    assert "status" in script
+
+
+def test_supervisor_module_contains_daemon_and_lifecycle():
+    from auto_video_factory.supervisor import AVFSupervisor
+    supervisor = AVFSupervisor(port=8000, host="127.0.0.1")
+    assert supervisor.port == 8000
+    assert supervisor.host == "127.0.0.1"
+    assert hasattr(supervisor, "start")
+    assert hasattr(supervisor, "stop")
+    assert hasattr(supervisor, "status")
+    assert hasattr(supervisor, "check_health")
+
+
