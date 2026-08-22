@@ -157,7 +157,7 @@ class AVFSupervisor:
             if pid > 0:
                 # Parent returns; wait for service to be healthy
                 ready = False
-                for _ in range(40):
+                for _ in range(100):
                     time.sleep(0.25)
                     if self.check_health():
                         ready = True
