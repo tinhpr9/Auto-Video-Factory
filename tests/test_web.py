@@ -67,6 +67,9 @@ def test_mobile_home_has_generate_flow_and_no_secret_field(tmp_path: Path):
     assert "OPENAI_API_KEY" not in html
     assert 'name="api_key"' not in html.lower()
     assert 'name="openai_api_key"' not in html.lower()
+    assert "config.provider === 'flow'" in html
+    assert "'FLOW'" in html
+
 
 
 def test_config_exposes_safe_server_capabilities_only(tmp_path: Path):
