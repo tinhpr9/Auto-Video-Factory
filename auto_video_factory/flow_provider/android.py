@@ -387,21 +387,25 @@ class WirelessAdbTransport(CDPTransport):
                 d for d in client.device_list()
                 if not d.serial.startswith("127.0.0.1:")
             ]
-            if len(devices) == 1:
+            responsive_devices = []
+            for d in devices:
                 try:
-                    devices[0].shell("echo ping")
-                    return devices[0]
+                    d.shell("echo ping")
+                    responsive_devices.append(d)
                 except Exception:
-                    return self._attempt_auto_connect() if auto_connect else None
-            if len(devices) > 1:
+                    continue
+
+            if len(responsive_devices) == 1:
+                return responsive_devices[0]
+            if len(responsive_devices) > 1:
                 log.error(
                     "Multiple wireless/USB ADB devices connected (%s) with no explicit serial configured. "
                     "Failing closed to prevent ambiguous routing. Specify serial via config.",
-                    [d.serial for d in devices],
+                    [d.serial for d in responsive_devices],
                 )
                 return None
 
-            # 0 devices connected: attempt dynamic auto-connect only if auto_connect is True
+            # 0 responsive devices connected: attempt dynamic auto-connect only if auto_connect is True
             return self._attempt_auto_connect() if auto_connect else None
         except Exception as e:
             log.debug("Failed to resolve wireless ADB device: %s", e)
@@ -552,34 +556,45 @@ class AndroidCDPManager:
                 ) from exc
         return self._client
 
-    def get_device(self):
+    def get_device(self, auto_connect: bool = False):
         """
         Resolve the active AdbDevice for foreground management and direct forward fallbacks.
         If serial is explicitly configured, returns that device.
-        If not, filters out local-TCP entries (127.0.0.1:*) to be consistent with
-        WirelessAdbTransport._get_device(), then selects the single non-local device.
-        Fails closed (returns None) when 0 or >1 non-local devices exist without a serial.
+        If not, filters out local-TCP entries (127.0.0.1:*), then selects the single responsive device.
+        If 0 responsive devices and auto_connect is True, attempts wireless auto-connect.
+        Fails closed (returns None) when 0 reachable or >1 responsive non-local devices exist without a serial.
         """
         try:
             client = self._get_client()
             if self.serial:
-                return client.device(serial=self.serial)
-            devices = [d for d in client.device_list() if not d.serial.startswith("127.0.0.1:")]
-            if len(devices) == 1:
                 try:
-                    devices[0].shell("echo ping")
-                    return devices[0]
+                    dev = client.device(serial=self.serial)
+                    dev.shell("echo ping")
+                    return dev
                 except Exception:
-                    return None
-            if len(devices) > 1:
+                    return self._wireless_transport._attempt_auto_connect() if auto_connect else None
+
+            devices = [d for d in client.device_list() if not d.serial.startswith("127.0.0.1:")]
+            responsive_devices = []
+            for d in devices:
+                try:
+                    d.shell("echo ping")
+                    responsive_devices.append(d)
+                except Exception:
+                    continue
+
+            if len(responsive_devices) == 1:
+                return responsive_devices[0]
+            if len(responsive_devices) > 1:
                 log.error(
                     "Multiple ADB devices found (%d: %s) with no explicit serial configured. "
                     "Failing closed to prevent ambiguous routing. Set ANDROID_SERIAL or configure serial.",
-                    len(devices),
-                    [d.serial for d in devices],
+                    len(responsive_devices),
+                    [d.serial for d in responsive_devices],
                 )
                 return None
-            return None
+
+            return self._wireless_transport._attempt_auto_connect() if auto_connect else None
         except Exception as e:
             log.debug("Failed to resolve ADB device: %s", e)
             return None
@@ -631,7 +646,7 @@ class AndroidCDPManager:
         Discover the native Chrome abstract devtools socket from /proc/net/unix.
         Typically 'chrome_devtools_remote' or 'chrome_devtools_remote_<PID>'.
         """
-        device = self.get_device()
+        device = self.get_device(auto_connect=True)
         if not device:
             return None
         return discover_device_devtools_socket(device)
@@ -643,17 +658,16 @@ class AndroidCDPManager:
 
         Transport selection hierarchy:
           1. select_transport() — picks any pre-probed (already-connected) transport.
-          2. If none available, explicitly attempt LocalAdbTcpTransport.ensure() —
-             this allows auto-connect via _attempt_connect() even though probe() is
-             side-effect-free and returns False before the first connection is made.
-          3. Fall back to direct device-level forward via get_device().
+          2. If none available, attempt LocalAdbTcpTransport.ensure()
+          3. Attempt WirelessAdbTransport.ensure() (auto-connects dropped session)
+          4. Fall back to direct device-level forward via get_device(auto_connect=True).
         """
         transport = self.select_transport()
         if transport is not None:
-            return transport.ensure()
+            if transport.ensure():
+                return True
 
-        # Attempt local TCP auto-connect explicitly (probe() is side-effect-free so
-        # select_transport() won't select this transport until ensure() establishes it).
+        # Attempt local TCP auto-connect explicitly
         local_tcp = self._get_local_tcp_transport()
         if local_tcp.ensure():
             self._active_transport = local_tcp
@@ -661,8 +675,16 @@ class AndroidCDPManager:
             log.info("LocalAdbTcp: auto-connected via ensure() fallback path.")
             return True
 
-        # Fallback to direct device-level forward if device is already resolved
-        device = self.get_device()
+        # Attempt wireless ADB auto-connect / discovery explicitly
+        wireless = self._get_wireless_transport()
+        if wireless.ensure():
+            self._active_transport = wireless
+            self._active_mode = CDPTransportMode.WIRELESS_ADB
+            log.info("WirelessAdb: auto-connected via ensure() fallback path.")
+            return True
+
+        # Fallback to direct device-level forward if device is resolved
+        device = self.get_device(auto_connect=True)
         if not device:
             log.warning("Cannot forward CDP: no ADB device or direct transport connected.")
             return False
@@ -672,12 +694,20 @@ class AndroidCDPManager:
         target_remote = f"localabstract:{socket_name}"
 
         try:
+            stale_forward = False
             for item in device.forward_list():
-                if item.local == target_local and item.remote == target_remote:
-                    if verify_cdp_endpoint(f"http://127.0.0.1:{self.cdp_port}", timeout=1.0):
+                if item.local == target_local:
+                    if item.remote == target_remote and verify_cdp_endpoint(f"http://127.0.0.1:{self.cdp_port}", timeout=1.0):
                         log.debug("Existing CDP forward active & verified: %s -> %s", item.local, item.remote)
                         return True
+                    stale_forward = True
                     break
+
+            if stale_forward:
+                try:
+                    device.forward_remove(target_local)
+                except Exception:
+                    pass
 
             device.forward(target_local, target_remote)
             log.info("Forwarded CDP port %d to %s", self.cdp_port, target_remote)

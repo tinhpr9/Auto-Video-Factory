@@ -333,25 +333,47 @@ class ProductionFlowProvider(FlowProvider):
                 else ForegroundPolicy.AUTO
             )
 
-        # Backend selection (Priority: explicit backend argument > AVF_BROWSER_BACKEND env > FLOW_ANDROID_CDP env)
-        backend_val = (backend or os.getenv("AVF_BROWSER_BACKEND", "")).lower().strip()
-        if backend_val in ("android_chrome", "android", "adb_chrome"):
-            self._backend = "android_chrome"
-        elif backend_val in ("native", "native_chromium", "termux"):
+        # Backend selection (Priority: explicit backend argument > FLOW_ANDROID_CDP=0 override > AVF_BROWSER_BACKEND env > FLOW_ANDROID_CDP env)
+        if backend is not None:
+            backend_val = backend.lower().strip()
+            if backend_val in ("android_chrome", "android", "adb_chrome"):
+                self._backend = "android_chrome"
+            elif backend_val in ("native", "native_chromium", "termux"):
+                self._backend = "native"
+            elif backend_val in ("adb", "legacy_adb"):
+                self._backend = "adb"
+            else:
+                self._backend = "native"
+        elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("0", "false", "no"):
             self._backend = "native"
-        elif backend_val in ("adb", "legacy_adb"):
-            self._backend = "adb"
-        elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("1", "true", "yes"):
-            self._backend = "android_chrome"
-        elif android_manager is not None:
-            self._backend = "android_chrome"
         else:
-            self._backend = "native"
+            backend_val = os.getenv("AVF_BROWSER_BACKEND", "").lower().strip()
+            if backend_val in ("android_chrome", "android", "adb_chrome"):
+                self._backend = "android_chrome"
+            elif backend_val in ("native", "native_chromium", "termux"):
+                self._backend = "native"
+            elif backend_val in ("adb", "legacy_adb"):
+                self._backend = "adb"
+            elif os.getenv("FLOW_ANDROID_CDP", "").lower() in ("1", "true", "yes"):
+                self._backend = "android_chrome"
+            elif android_manager is not None:
+                self._backend = "android_chrome"
+            else:
+                self._backend = "native"
 
         if android_manager is not None:
             self._android_manager: Optional[AndroidCDPManager] = android_manager
         elif self._backend == "android_chrome":
-            cdp_port = int(os.getenv("FLOW_CDP_PORT", "9222"))
+            port_val = os.getenv("FLOW_CDP_PORT")
+            if not port_val and self._cdp_url:
+                try:
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(self._cdp_url)
+                    if parsed.port:
+                        port_val = str(parsed.port)
+                except Exception:
+                    pass
+            cdp_port = int(port_val or "9224")
             self._android_manager = AndroidCDPManager(
                 cdp_port=cdp_port,
                 foreground_policy=self._foreground_policy,
