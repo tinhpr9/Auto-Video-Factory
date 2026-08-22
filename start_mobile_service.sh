@@ -8,14 +8,35 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 1. State and PID directory setup
-STATE_DIR="${AVF_STATE_DIR:-$SCRIPT_DIR/output/web}"
-mkdir -p "$STATE_DIR"
+# 1. Resolve canonical production root (decouple from PR worktrees)
+if [ -n "${AVF_PRODUCTION_ROOT:-}" ] && [ -d "$AVF_PRODUCTION_ROOT" ]; then
+    CANONICAL_ROOT="$(cd "$AVF_PRODUCTION_ROOT" && pwd)"
+elif [ -d "$SCRIPT_DIR/.git" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+    CANONICAL_ROOT="$SCRIPT_DIR"
+elif [ -d "/root/Auto-Video-Factory" ] && [ -f "/root/Auto-Video-Factory/pyproject.toml" ]; then
+    CANONICAL_ROOT="/root/Auto-Video-Factory"
+else
+    CANONICAL_ROOT="$SCRIPT_DIR"
+fi
+export AVF_PRODUCTION_ROOT="$CANONICAL_ROOT"
+
+# 2. State and PID directory setup (anchored to canonical root or safe fallback)
+if [ -n "${AVF_STATE_DIR:-}" ]; then
+    STATE_DIR="$AVF_STATE_DIR"
+    mkdir -p "$STATE_DIR"
+else
+    STATE_DIR="$CANONICAL_ROOT/output/web"
+    if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+        STATE_DIR="$HOME/.auto_video_factory/web"
+        mkdir -p "$STATE_DIR"
+        export AVF_STATE_DIR="$STATE_DIR"
+    fi
+fi
 SUPERVISOR_PID_FILE="$STATE_DIR/avf_supervisor.pid"
 WORKER_PID_FILE="$STATE_DIR/avf_web.pid"
 SUPERVISOR_LOG="$STATE_DIR/avf_supervisor.log"
 
-# 2. Environment defaults for Phone-Only Flow Runtime
+# 3. Environment defaults for Phone-Only Flow Runtime
 export AVF_PROVIDER="flow"
 export AVF_LOCAL_PHONE="1"
 export AVF_REQUIRE_AUTH="0"
@@ -29,9 +50,9 @@ export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-android_chrome}"
 export AVF_FLOW_MODE="flow_balanced"
 export AVF_FLOW_MODEL="omni_flash"
 
-# 3. Locate Python binary
+# 4. Locate Python binary (prefer canonical root venv)
 PYTHON_BIN=""
-for candidate in "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/../Auto-Video-Factory/.venv/bin/python3" "/root/Auto-Video-Factory/.venv/bin/python3"; do
+for candidate in "$CANONICAL_ROOT/.venv/bin/python3" "$CANONICAL_ROOT/.venv/bin/python" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/.venv/bin/python" "/root/Auto-Video-Factory/.venv/bin/python3"; do
     if [ -x "$candidate" ]; then
         PYTHON_BIN="$candidate"
         break
