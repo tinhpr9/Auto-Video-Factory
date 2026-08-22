@@ -42,9 +42,9 @@ export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-android_chrome}"
 export AVF_FLOW_MODE="flow_balanced"
 export AVF_FLOW_MODEL="omni_flash"
 
-# 3. Locate Python binary
+# 4. Locate Python binary (prefer canonical root venv)
 PYTHON_BIN=""
-for candidate in "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/../Auto-Video-Factory/.venv/bin/python3" "/root/Auto-Video-Factory/.venv/bin/python3"; do
+for candidate in "$CANONICAL_ROOT/.venv/bin/python3" "$CANONICAL_ROOT/.venv/bin/python" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/.venv/bin/python" "/root/Auto-Video-Factory/.venv/bin/python3"; do
     if [ -x "$candidate" ]; then
         PYTHON_BIN="$candidate"
         break

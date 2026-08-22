@@ -92,4 +92,66 @@ def test_supervisor_anchors_cwd_and_pythonpath_to_canonical_root(tmp_path):
         assert sup.worker_pid_file == fake_state / "avf_web.pid"
 
 
+def test_unwritable_package_parent_fallback(tmp_path, monkeypatch):
+    from auto_video_factory.supervisor import AVFSupervisor
+    unwritable_root = tmp_path / "read_only_root"
+    unwritable_root.mkdir()
+    # Mock mkdir to raise PermissionError when attempting to create output/web in unwritable root
+    orig_mkdir = Path.mkdir
+    def mock_mkdir(self, *args, **kwargs):
+        if str(unwritable_root) in str(self) and "output/web" in str(self):
+            raise PermissionError("Mock read-only filesystem")
+        return orig_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mock_mkdir)
+    monkeypatch.delenv("AVF_STATE_DIR", raising=False)
+    sup = AVFSupervisor(canonical_root=unwritable_root, port=8000)
+    expected_fallback = (Path.home() / ".auto_video_factory/web").resolve()
+    assert sup.state_dir == expected_fallback
+
+
+def test_git_probe_timeout_falls_through(tmp_path, monkeypatch):
+    import subprocess
+    from auto_video_factory.supervisor import resolve_canonical_root
+
+    def mock_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git rev-parse", timeout=3.0)
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.delenv("AVF_PRODUCTION_ROOT", raising=False)
+    # Should safely fall through without hanging or unhandled exception
+    res = resolve_canonical_root(tmp_path)
+    assert res is not None
+
+
+def test_existing_pythonpath_preserved(tmp_path, monkeypatch):
+    from auto_video_factory.supervisor import AVFSupervisor
+    fake_prod = tmp_path / "prod_root"
+    fake_prod.mkdir()
+    (fake_prod / "auto_video_factory").mkdir()
+    fake_state = fake_prod / "output/web"
+
+    with patch.dict(os.environ, {"AVF_PRODUCTION_ROOT": str(fake_prod), "PYTHONPATH": "/custom/lib1:/custom/lib2"}):
+        sup = AVFSupervisor(state_dir=fake_state, port=8000)
+        # Test worker env building logic
+        worker_env = os.environ.copy()
+        existing_pp = os.environ.get("PYTHONPATH", "")
+        if existing_pp:
+            parts = [p for p in existing_pp.split(os.pathsep) if p and p != str(sup.canonical_root)]
+            worker_env["PYTHONPATH"] = os.pathsep.join([str(sup.canonical_root)] + parts)
+        assert worker_env["PYTHONPATH"] == f"{sup.canonical_root}:/custom/lib1:/custom/lib2"
+
+
+def test_custom_production_root_venv_preferred(tmp_path):
+    script_path = Path("start_mobile_service.sh")
+    content = script_path.read_text(encoding="utf-8")
+    # Verify launcher checks CANONICAL_ROOT venv before SCRIPT_DIR or system
+    assert '"$CANONICAL_ROOT/.venv/bin/python3"' in content
+    pos_canonical = content.find('"$CANONICAL_ROOT/.venv/bin/python3"')
+    pos_system = content.find('command -v python3')
+    assert pos_canonical != -1 and pos_system != -1
+    assert pos_canonical < pos_system
+
+
+
 

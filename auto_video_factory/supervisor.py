@@ -53,12 +53,13 @@ def resolve_canonical_root(start_path: Path | None = None) -> Path:
             capture_output=True,
             text=True,
             check=False,
+            timeout=3.0,
         )
         if res.returncode == 0 and res.stdout.strip():
             common_git_dir = Path(res.stdout.strip()).resolve()
             if common_git_dir.name == ".git":
                 return common_git_dir.parent
-    except Exception:
+    except (subprocess.TimeoutExpired, Exception):
         pass
 
     std_root = Path("/root/Auto-Video-Factory")
@@ -87,7 +88,14 @@ class AVFSupervisor:
                 p = Path(env_state)
                 self.state_dir = p if p.is_absolute() else (self.canonical_root / p).resolve()
             else:
-                self.state_dir = (self.canonical_root / "output/web").resolve()
+                default_state = self.canonical_root / "output/web"
+                try:
+                    default_state.mkdir(parents=True, exist_ok=True)
+                    self.state_dir = default_state.resolve()
+                except (PermissionError, OSError):
+                    fallback_state = Path.home() / ".auto_video_factory/web"
+                    fallback_state.mkdir(parents=True, exist_ok=True)
+                    self.state_dir = fallback_state.resolve()
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.port = port
@@ -231,7 +239,12 @@ class AVFSupervisor:
 
                 # Launch web worker subprocess pinned to canonical production root
                 worker_env = os.environ.copy()
-                worker_env["PYTHONPATH"] = str(self.canonical_root)
+                existing_pp = os.environ.get("PYTHONPATH", "")
+                if existing_pp:
+                    parts = [p for p in existing_pp.split(os.pathsep) if p and p != str(self.canonical_root)]
+                    worker_env["PYTHONPATH"] = os.pathsep.join([str(self.canonical_root)] + parts)
+                else:
+                    worker_env["PYTHONPATH"] = str(self.canonical_root)
                 worker_env["AVF_PRODUCTION_ROOT"] = str(self.canonical_root)
                 worker_env["AVF_STATE_DIR"] = str(self.state_dir)
 
