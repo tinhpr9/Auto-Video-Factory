@@ -153,5 +153,60 @@ def test_custom_production_root_venv_preferred(tmp_path):
     assert pos_canonical < pos_system
 
 
+def test_main_unwritable_default_state_fallback(tmp_path, monkeypatch):
+    from auto_video_factory.supervisor import resolve_canonical_root, AVFSupervisor
+    unwritable_root = tmp_path / "read_only_canonical_root"
+    unwritable_root.mkdir()
+    (unwritable_root / "auto_video_factory").mkdir()
+
+    orig_mkdir = Path.mkdir
+    def mock_mkdir(self, *args, **kwargs):
+        if str(unwritable_root) in str(self) and "output/web" in str(self):
+            raise PermissionError("Mock read-only production root")
+        return orig_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mock_mkdir)
+    monkeypatch.delenv("AVF_STATE_DIR", raising=False)
+
+    # Invoke the EXACT production construction path used in main()
+    with patch.dict(os.environ, {"AVF_PRODUCTION_ROOT": str(unwritable_root)}, clear=False):
+        canonical_root = resolve_canonical_root()
+        env_state = os.getenv("AVF_STATE_DIR")
+        state_dir = Path(env_state) if env_state else None
+        supervisor = AVFSupervisor(state_dir=state_dir, canonical_root=canonical_root, port=8000)
+
+        expected_fallback = (Path.home() / ".auto_video_factory/web").resolve()
+        assert supervisor.state_dir == expected_fallback
+        assert supervisor.supervisor_pid_file == expected_fallback / "avf_supervisor.pid"
+        assert supervisor.worker_pid_file == expected_fallback / "avf_web.pid"
+        assert supervisor.log_file == expected_fallback / "avf_supervisor.log"
+
+
+def test_explicit_state_dir_preserved(tmp_path):
+    from auto_video_factory.supervisor import AVFSupervisor
+    explicit_dir = tmp_path / "my_explicit_state"
+    explicit_dir.mkdir()
+    sup = AVFSupervisor(state_dir=explicit_dir, port=8000)
+    assert sup.state_dir == explicit_dir.resolve()
+    assert sup.supervisor_pid_file == explicit_dir / "avf_supervisor.pid"
+
+
+def test_explicit_unwritable_state_dir_fails_closed(tmp_path, monkeypatch):
+    import pytest
+    from auto_video_factory.supervisor import AVFSupervisor
+    unwritable_explicit = tmp_path / "unwritable_explicit_dir"
+
+    orig_mkdir = Path.mkdir
+    def mock_mkdir(self, *args, **kwargs):
+        if str(unwritable_explicit) in str(self):
+            raise PermissionError("Permission denied on explicit path")
+        return orig_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mock_mkdir)
+    with pytest.raises(PermissionError):
+        AVFSupervisor(state_dir=unwritable_explicit, port=8000)
+
+
+
 
 

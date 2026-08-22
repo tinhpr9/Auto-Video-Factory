@@ -80,13 +80,15 @@ class AVFSupervisor:
     ):
         apply_phone_defaults()
         self.canonical_root = canonical_root or resolve_canonical_root()
-        if state_dir:
+        if state_dir is not None:
             self.state_dir = state_dir if state_dir.is_absolute() else (self.canonical_root / state_dir).resolve()
+            self.state_dir.mkdir(parents=True, exist_ok=True)
         else:
             env_state = os.getenv("AVF_STATE_DIR")
             if env_state:
                 p = Path(env_state)
                 self.state_dir = p if p.is_absolute() else (self.canonical_root / p).resolve()
+                self.state_dir.mkdir(parents=True, exist_ok=True)
             else:
                 default_state = self.canonical_root / "output/web"
                 try:
@@ -97,7 +99,6 @@ class AVFSupervisor:
                     fallback_state.mkdir(parents=True, exist_ok=True)
                     self.state_dir = fallback_state.resolve()
 
-        self.state_dir.mkdir(parents=True, exist_ok=True)
         self.port = port
         self.host = host
         self.supervisor_pid_file = self.state_dir / "avf_supervisor.pid"
@@ -339,7 +340,8 @@ def main():
     port = int(os.getenv("AVF_PORT", str(DEFAULT_PORT)))
     host = os.getenv("AVF_HOST", DEFAULT_HOST)
     canonical_root = resolve_canonical_root()
-    state_dir = Path(os.getenv("AVF_STATE_DIR", str(canonical_root / "output/web")))
+    env_state = os.getenv("AVF_STATE_DIR")
+    state_dir = Path(env_state) if env_state else None
 
     supervisor = AVFSupervisor(state_dir=state_dir, port=port, host=host, canonical_root=canonical_root)
 

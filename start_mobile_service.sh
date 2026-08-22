@@ -20,10 +20,18 @@ else
 fi
 export AVF_PRODUCTION_ROOT="$CANONICAL_ROOT"
 
-# 2. State and PID directory setup (anchored to canonical root)
-STATE_DIR="${AVF_STATE_DIR:-$CANONICAL_ROOT/output/web}"
-mkdir -p "$STATE_DIR"
-export AVF_STATE_DIR="$STATE_DIR"
+# 2. State and PID directory setup (anchored to canonical root or safe fallback)
+if [ -n "${AVF_STATE_DIR:-}" ]; then
+    STATE_DIR="$AVF_STATE_DIR"
+    mkdir -p "$STATE_DIR"
+else
+    STATE_DIR="$CANONICAL_ROOT/output/web"
+    if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+        STATE_DIR="$HOME/.auto_video_factory/web"
+        mkdir -p "$STATE_DIR"
+        export AVF_STATE_DIR="$STATE_DIR"
+    fi
+fi
 SUPERVISOR_PID_FILE="$STATE_DIR/avf_supervisor.pid"
 WORKER_PID_FILE="$STATE_DIR/avf_web.pid"
 SUPERVISOR_LOG="$STATE_DIR/avf_supervisor.log"
