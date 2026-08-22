@@ -4,11 +4,11 @@ name: Auto Video Factory
 # MoneyPrinterTurbo — GitHub Actions renderer
 # Upstream: https://github.com/harry0703/MoneyPrinterTurbo
 # Pinned SHA: b42e945b497176c823579f9b1895d9323446de23
-# Visual Quality: Google Flow Quality Pipeline & Scene Planner (V4.3)
+# Visual Quality: Google Flow Quality Pipeline (V4.3) & Gemini Video Provider (V4.2)
 # ============================================================
 #
 # REQUIRED SECRETS (Settings → Secrets and variables → Actions):
-#   GEMINI_API_KEY   — Google Gemini API key (free tier for script generation)
+#   GEMINI_API_KEY   — Google Gemini API key (free tier for script generation / AI video)
 #   PEXELS_API_KEY   — Pexels API key (only required when visual_provider=pexels)
 #
 # OPTIONAL SECRETS:
@@ -18,7 +18,8 @@ name: Auto Video Factory
 #   Actions → Auto Video Factory → Run workflow
 #   1. Mode "prepare_flow_pack": Generates Scene Pack JSON, copyable prompts, and mobile checklist.
 #   2. Mode "flow_clips": Composes video from staged Google Flow clips (Zero Pexels leakage).
-#   3. Mode "pexels": Baseline free stock footage rendering.
+#   3. Mode "gemini_video": Composes video with automated Gemini Video scene planner & generation.
+#   4. Mode "pexels": Baseline free stock footage rendering.
 
 on:
   workflow_dispatch:
@@ -53,17 +54,32 @@ on:
           - pexels
           - pixabay
       visual_provider:
-        description: "Nhà cung cấp hình ảnh (flow_clips, prepare_flow_pack, pexels)"
+        description: "Nhà cung cấp hình ảnh (flow_clips, prepare_flow_pack, gemini_video, pexels)"
         required: true
         default: flow_clips
         type: choice
         options:
           - flow_clips
           - prepare_flow_pack
+          - gemini_video
           - pexels
+      quality_mode:
+        description: "Chế độ AI Video (economy tối ưu chi phí, quality, smoke cho 1 clip 3-5s)"
+        required: false
+        default: economy
+        type: choice
+        options:
+          - economy
+          - quality
+          - smoke
+      max_video_generation_seconds:
+        description: "Giới hạn tối đa số giây AI Video sinh ra (Cost Guard)"
+        required: false
+        default: "60"
+        type: string
       flow_mode:
         description: "Chế độ Flow credit (flow_balanced: Omni Flash + Climax Veo Quality)"
-        required: true
+        required: false
         default: flow_balanced
         type: choice
         options:
@@ -179,7 +195,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # JOB B: render — composites video using flow_clips or pexels
+  # JOB B: render — composites video using flow_clips, gemini_video, or pexels
   # Uses contents: read only (no release creation).
   # ============================================================
   render:
@@ -194,6 +210,8 @@ jobs:
       AVF_VOICE: ${{ inputs.voice }}
       AVF_VIDEO_SOURCE: ${{ inputs.video_source }}
       AVF_VISUAL_PROVIDER: ${{ inputs.visual_provider || 'flow_clips' }}
+      AVF_QUALITY_MODE: ${{ inputs.quality_mode || 'economy' }}
+      AVF_MAX_GEN_SECONDS: ${{ inputs.max_video_generation_seconds || '60' }}
       AVF_FLOW_MODE: ${{ inputs.flow_mode || 'flow_balanced' }}
       AVF_FLOW_SESSION: ${{ inputs.flow_session }}
       MPT_SHA: b42e945b497176c823579f9b1895d9323446de23
@@ -261,6 +279,8 @@ jobs:
               load_and_validate_flow_session,
           )
 
+          from auto_video_factory.visual_provider import get_visual_provider
+
           provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
           session  = os.environ.get("AVF_FLOW_SESSION", "").strip()
           topic    = os.environ.get("AVF_TOPIC", "")
@@ -269,7 +289,23 @@ jobs:
 
           print(f"Executing Preflight for Visual Provider: {provider}")
 
-          if provider == "flow_clips":
+          if provider == "gemini_video":
+              prov_obj = get_visual_provider("gemini_video")
+              api_key = os.environ.get("GEMINI_API_KEY", "")
+              check = prov_obj.preflight_check(api_key)
+              if check.get("status") != "ok":
+                  print(f"::error::Gemini Video preflight failed: {check.get('message')}")
+                  sys.exit(1)
+              print(f"Gemini Video Preflight: {check.get('message')}")
+          elif provider == "pexels":
+              prov_obj = get_visual_provider("pexels")
+              api_key = os.environ.get("PEXELS_API_KEY", "")
+              check = prov_obj.preflight_check(api_key)
+              if check.get("status") != "ok":
+                  print(f"::error::Pexels preflight failed: {check.get('message')}")
+                  sys.exit(1)
+              print(f"Pexels Preflight: {check.get('message')}")
+          elif provider == "flow_clips":
               pack_dir = Path(os.environ["GITHUB_WORKSPACE"]) / "flow_pack_output"
               pack_dir.mkdir(parents=True, exist_ok=True)
 
@@ -380,6 +416,64 @@ jobs:
           PYEOF
 
       # -------------------------------------------------------
+      # 7.4 Plan AI Video Scenes (if visual_provider == gemini_video)
+      # -------------------------------------------------------
+      - name: Plan and Stage Gemini Video Scenes
+        if: inputs.visual_provider == 'gemini_video'
+        working-directory: mpt
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - << 'PYEOF'
+          import os, sys, json
+          from pathlib import Path
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
+          from auto_video_factory.visual_provider import get_visual_provider, GEMINI_VIDEO_MODEL, BillingBlockedError
+
+          provider = get_visual_provider("gemini_video")
+          topic = os.environ.get("AVF_TOPIC", "")
+          duration = int(os.environ.get("AVF_DURATION", "45"))
+          quality_mode = os.environ.get("AVF_QUALITY_MODE", "economy")
+          max_seconds = int(os.environ.get("AVF_MAX_GEN_SECONDS", "60"))
+          api_key = os.environ.get("GEMINI_API_KEY", "")
+
+          scenes = provider.plan_scenes(
+              topic=topic,
+              duration_seconds=duration,
+              quality_mode=quality_mode,
+              max_seconds=max_seconds,
+          )
+          print(f"Planned {len(scenes)} scenes for duration {duration}s using {GEMINI_VIDEO_MODEL} (mode: {quality_mode})")
+          with open("planned_scenes.json", "w", encoding="utf-8") as f:
+              json.dump([s.to_dict() for s in scenes], f, ensure_ascii=False, indent=2)
+
+          # Generate scenes (or smoke clip)
+          staged_dir = Path("storage/local_videos")
+          staged_dir.mkdir(parents=True, exist_ok=True)
+          generated_clips = []
+          try:
+              for s in scenes:
+                  out_file = staged_dir / f"scene_{s.scene_id:02d}.mp4"
+                  print(f"Generating scene {s.scene_id}/{len(scenes)} ({s.duration_target}s)...")
+                  provider.generate_scene_clip(s, out_file, api_key)
+                  generated_clips.append(str(out_file.resolve()))
+          except BillingBlockedError as e:
+              print(f"::error::Gemini Video billing/access blocked: {e}")
+              print("::notice::FINAL_STATUS=BLOCKED_BILLING")
+              sys.exit(1)
+          except Exception as e:
+              print(f"::error::Gemini Video generation failed: {e}")
+              sys.exit(1)
+
+          with open("staged_gemini_materials.txt", "w", encoding="utf-8") as f:
+              f.write(",".join(generated_clips))
+
+          clip_target_sec = scenes[0].duration_target if scenes else 8
+          with open("staged_clip_duration.txt", "w", encoding="utf-8") as f:
+              f.write(str(clip_target_sec))
+          PYEOF
+
+      # -------------------------------------------------------
       # 7.5 Validate and Stage Flow Clips (Zero Pexels Leakage & Fail-Closed)
       # -------------------------------------------------------
       - name: Stage Flow Clips
@@ -453,12 +547,8 @@ jobs:
           voice        = os.environ["AVF_VOICE"]
           provider     = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
 
-          # Check if flow local clips are present
-          flow_materials = ""
-          if os.path.exists("staged_flow_materials.txt"):
-              with open("staged_flow_materials.txt", "r", encoding="utf-8") as f:
-                  flow_materials = f.read().strip()
-
+          # Check if local clips (flow or gemini) are present
+          local_materials = ""
           clip_duration = None
           if os.path.exists("staged_clip_duration.txt"):
               try:
@@ -469,11 +559,25 @@ jobs:
               clip_duration = 8 if str(duration) == "45" else 10
 
           if provider == "flow_clips":
-              if not flow_materials:
+              if os.path.exists("staged_flow_materials.txt"):
+                  with open("staged_flow_materials.txt", "r", encoding="utf-8") as f:
+                      local_materials = f.read().strip()
+              if not local_materials:
                   print("::error::No staged Flow clips found in storage/flow_videos/ for visual_provider=flow_clips. Please add clips to storage/flow_videos/ or use visual_provider=prepare_flow_pack to generate prompts.")
                   sys.exit(1)
               video_source = "local"
-              print(f"Using Flow Local Clips: {flow_materials} (Zero Pexels Leakage, clip_duration={clip_duration}s)")
+              print(f"Using Flow Local Clips: {local_materials} (Zero Pexels Leakage, clip_duration={clip_duration}s)")
+          elif provider == "gemini_video":
+              if os.path.exists("staged_gemini_materials.txt"):
+                  with open("staged_gemini_materials.txt", "r", encoding="utf-8") as f:
+                      local_materials = f.read().strip()
+              elif glob.glob("storage/local_videos/*.mp4"):
+                  local_materials = ",".join(sorted(glob.glob("storage/local_videos/*.mp4")))
+              if not local_materials:
+                  print("::error::No staged Gemini video clips found in storage/local_videos/ for visual_provider=gemini_video.")
+                  sys.exit(1)
+              video_source = "local"
+              print(f"Using Gemini Video Local Clips: {local_materials} (Zero Pexels Leakage, clip_duration={clip_duration}s)")
           else:
               video_source = os.environ.get("AVF_VIDEO_SOURCE", "pexels")
               print(f"Using Video Source: {video_source}")
@@ -504,7 +608,7 @@ jobs:
                   duration=duration,
                   voice=voice,
                   video_source=video_source,
-                  video_materials=flow_materials if video_source == "local" else "",
+                  video_materials=local_materials if video_source == "local" else "",
                   video_clip_duration=clip_duration,
                   video_script_prompt=script_prompt,
                   stop_at="script",
@@ -547,7 +651,7 @@ jobs:
               duration=duration,
               voice=voice,
               video_source=video_source,
-              video_materials=flow_materials if video_source == "local" else "",
+              video_materials=local_materials if video_source == "local" else "",
               video_clip_duration=clip_duration,
               video_script=locked_script,
           )
@@ -567,6 +671,7 @@ jobs:
           import os, sys, json, shutil, glob
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], "avf"))
           from auto_video_factory.mpt_adapter import locate_output_video, sanitize_result_metadata
+          from auto_video_factory.visual_provider import GEMINI_VIDEO_MODEL
 
           mpt_root = os.getcwd()
 
@@ -588,16 +693,30 @@ jobs:
           if srt_candidates:
               shutil.copy2(srt_candidates[0], os.path.join(out_dir, "captions.srt"))
 
+          provider = os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips")
+          planned_scenes_count = 0
+          if os.path.exists("planned_scenes.json"):
+              try:
+                  with open("planned_scenes.json", encoding="utf-8") as f:
+                      planned_scenes_count = len(json.load(f))
+              except Exception:
+                  pass
+
+          video_source = "local" if provider in ("gemini_video", "flow_clips") else os.environ.get("AVF_VIDEO_SOURCE", "pexels")
           meta = sanitize_result_metadata({
               "status": "ok",
               "task_id": task_id,
               "mpt_sha": os.environ.get("MPT_SHA", ""),
-              "visual_provider": os.environ.get("AVF_VISUAL_PROVIDER", "flow_clips"),
+              "visual_provider": provider,
+              "video_model": GEMINI_VIDEO_MODEL if provider == "gemini_video" else ("flow" if provider == "flow_clips" else "pexels"),
+              "quality_mode": os.environ.get("AVF_QUALITY_MODE", "economy"),
               "flow_mode": os.environ.get("AVF_FLOW_MODE", "flow_balanced"),
+              "planned_scene_count": planned_scenes_count,
+              "planned_generated_seconds": planned_scenes_count * 8 if provider == "gemini_video" else 0,
               "topic_length": len(os.environ.get("AVF_TOPIC", "")),
               "duration_input": os.environ.get("AVF_DURATION"),
               "voice": os.environ.get("AVF_VOICE"),
-              "video_source": os.environ.get("AVF_VIDEO_SOURCE"),
+              "video_source": video_source,
               "video_size_bytes": os.path.getsize(os.path.join(out_dir, "video.mp4")),
           })
           with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as f:
@@ -648,4 +767,3 @@ jobs:
             mpt/avf_output/result.json
           if-no-files-found: error
           retention-days: 1
-
