@@ -387,25 +387,22 @@ class WirelessAdbTransport(CDPTransport):
                 d for d in client.device_list()
                 if not d.serial.startswith("127.0.0.1:")
             ]
-            responsive_devices = []
-            for d in devices:
-                try:
-                    d.shell("echo ping")
-                    responsive_devices.append(d)
-                except Exception:
-                    continue
-
-            if len(responsive_devices) == 1:
-                return responsive_devices[0]
-            if len(responsive_devices) > 1:
+            if len(devices) > 1:
                 log.error(
                     "Multiple wireless/USB ADB devices connected (%s) with no explicit serial configured. "
                     "Failing closed to prevent ambiguous routing. Specify serial via config.",
-                    [d.serial for d in responsive_devices],
+                    [d.serial for d in devices],
                 )
                 return None
 
-            # 0 responsive devices connected: attempt dynamic auto-connect only if auto_connect is True
+            if len(devices) == 1:
+                try:
+                    devices[0].shell("echo ping")
+                    return devices[0]
+                except Exception:
+                    return self._attempt_auto_connect() if auto_connect else None
+
+            # 0 devices connected: attempt dynamic auto-connect only if auto_connect is True
             return self._attempt_auto_connect() if auto_connect else None
         except Exception as e:
             log.debug("Failed to resolve wireless ADB device: %s", e)
@@ -575,25 +572,23 @@ class AndroidCDPManager:
                     return self._wireless_transport._attempt_auto_connect() if auto_connect else None
 
             devices = [d for d in client.device_list() if not d.serial.startswith("127.0.0.1:")]
-            responsive_devices = []
-            for d in devices:
-                try:
-                    d.shell("echo ping")
-                    responsive_devices.append(d)
-                except Exception:
-                    continue
-
-            if len(responsive_devices) == 1:
-                return responsive_devices[0]
-            if len(responsive_devices) > 1:
+            if len(devices) > 1:
                 log.error(
                     "Multiple ADB devices found (%d: %s) with no explicit serial configured. "
                     "Failing closed to prevent ambiguous routing. Set ANDROID_SERIAL or configure serial.",
-                    len(responsive_devices),
-                    [d.serial for d in responsive_devices],
+                    len(devices),
+                    [d.serial for d in devices],
                 )
                 return None
 
+            if len(devices) == 1:
+                try:
+                    devices[0].shell("echo ping")
+                    return devices[0]
+                except Exception:
+                    return self._wireless_transport._attempt_auto_connect() if auto_connect else None
+
+            # 0 devices connected: attempt auto-connect via wireless transport
             return self._wireless_transport._attempt_auto_connect() if auto_connect else None
         except Exception as e:
             log.debug("Failed to resolve ADB device: %s", e)

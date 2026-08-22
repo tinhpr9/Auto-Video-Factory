@@ -391,8 +391,10 @@ class TestMobileLauncherScript:
         # 4. Fail cleanly if readiness probe times out
         assert "/health" in content
         assert "am start" in content
-        # Ensure 'am start' does not happen before background server launch
-        server_launch_pos = content.find("auto_video_factory.web")
+        # Ensure 'am start' does not happen before server launch
+        server_launch_pos = content.find("auto_video_factory.supervisor")
+        if server_launch_pos == -1:
+            server_launch_pos = content.find("auto_video_factory.web")
         am_start_pos = content.find("am start")
         assert server_launch_pos != -1
         assert am_start_pos != -1

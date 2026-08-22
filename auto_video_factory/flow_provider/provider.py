@@ -367,10 +367,9 @@ class ProductionFlowProvider(FlowProvider):
             port_val = os.getenv("FLOW_CDP_PORT")
             if not port_val and self._cdp_url:
                 try:
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(self._cdp_url)
-                    if parsed.port:
-                        port_val = str(parsed.port)
+                    from .cdp_endpoint import parse_cdp_url
+                    _, port_from_url, _ = parse_cdp_url(self._cdp_url)
+                    port_val = str(port_from_url)
                 except Exception:
                     pass
             cdp_port = int(port_val or "9224")
