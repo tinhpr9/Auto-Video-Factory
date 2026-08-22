@@ -8,14 +8,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 1. State and PID directory setup
-STATE_DIR="${AVF_STATE_DIR:-$SCRIPT_DIR/output/web}"
+# 1. Resolve canonical production root (decouple from PR worktrees)
+if [ -n "${AVF_PRODUCTION_ROOT:-}" ] && [ -d "$AVF_PRODUCTION_ROOT" ]; then
+    CANONICAL_ROOT="$(cd "$AVF_PRODUCTION_ROOT" && pwd)"
+elif [ -d "$SCRIPT_DIR/.git" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+    CANONICAL_ROOT="$SCRIPT_DIR"
+elif [ -d "/root/Auto-Video-Factory" ] && [ -f "/root/Auto-Video-Factory/pyproject.toml" ]; then
+    CANONICAL_ROOT="/root/Auto-Video-Factory"
+else
+    CANONICAL_ROOT="$SCRIPT_DIR"
+fi
+export AVF_PRODUCTION_ROOT="$CANONICAL_ROOT"
+
+# 2. State and PID directory setup (anchored to canonical root)
+STATE_DIR="${AVF_STATE_DIR:-$CANONICAL_ROOT/output/web}"
 mkdir -p "$STATE_DIR"
+export AVF_STATE_DIR="$STATE_DIR"
 SUPERVISOR_PID_FILE="$STATE_DIR/avf_supervisor.pid"
 WORKER_PID_FILE="$STATE_DIR/avf_web.pid"
 SUPERVISOR_LOG="$STATE_DIR/avf_supervisor.log"
 
-# 2. Environment defaults for Phone-Only Flow Runtime
+# 3. Environment defaults for Phone-Only Flow Runtime
 export AVF_PROVIDER="flow"
 export AVF_LOCAL_PHONE="1"
 export AVF_REQUIRE_AUTH="0"

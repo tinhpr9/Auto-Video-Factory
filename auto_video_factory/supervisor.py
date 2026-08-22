@@ -31,16 +31,85 @@ def apply_phone_defaults() -> None:
     os.environ.setdefault("AVF_FLOW_MODEL", "omni_flash")
 
 
+def resolve_canonical_root(start_path: Path | None = None) -> Path:
+    """
+    Resolve the canonical production repository root directory.
+    Priority:
+      1. Explicit AVF_PRODUCTION_ROOT environment variable.
+      2. Git common directory (when executed from an ephemeral git worktree).
+      3. Standard production location (/root/Auto-Video-Factory) if valid.
+      4. Fall back to package parent directory.
+    """
+    env_root = os.getenv("AVF_PRODUCTION_ROOT")
+    if env_root and Path(env_root).is_dir():
+        return Path(env_root).resolve()
+
+    target = (start_path or Path(__file__).resolve().parent.parent).resolve()
+
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(target),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            common_git_dir = Path(res.stdout.strip()).resolve()
+            if common_git_dir.name == ".git":
+                return common_git_dir.parent
+    except Exception:
+        pass
+
+    std_root = Path("/root/Auto-Video-Factory")
+    if std_root.is_dir() and (std_root / "auto_video_factory").is_dir():
+        return std_root.resolve()
+
+    return target
+
+
 class AVFSupervisor:
-    def __init__(self, state_dir: Path | None = None, port: int = DEFAULT_PORT, host: str = DEFAULT_HOST):
+    def __init__(
+        self,
+        state_dir: Path | None = None,
+        port: int = DEFAULT_PORT,
+        host: str = DEFAULT_HOST,
+        canonical_root: Path | None = None,
+        python_bin: str | None = None,
+    ):
         apply_phone_defaults()
-        self.state_dir = state_dir or Path("output/web")
+        self.canonical_root = canonical_root or resolve_canonical_root()
+        if state_dir:
+            self.state_dir = state_dir if state_dir.is_absolute() else (self.canonical_root / state_dir).resolve()
+        else:
+            env_state = os.getenv("AVF_STATE_DIR")
+            if env_state:
+                p = Path(env_state)
+                self.state_dir = p if p.is_absolute() else (self.canonical_root / p).resolve()
+            else:
+                self.state_dir = (self.canonical_root / "output/web").resolve()
+
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.port = port
         self.host = host
         self.supervisor_pid_file = self.state_dir / "avf_supervisor.pid"
         self.worker_pid_file = self.state_dir / "avf_web.pid"
         self.log_file = self.state_dir / "avf_supervisor.log"
+
+        # Resolve canonical python binary
+        if python_bin:
+            self.python_bin = python_bin
+        else:
+            candidates = [
+                self.canonical_root / ".venv/bin/python3",
+                self.canonical_root / ".venv/bin/python",
+                Path("/root/Auto-Video-Factory/.venv/bin/python3"),
+            ]
+            self.python_bin = sys.executable
+            for cand in candidates:
+                if cand.is_file() and os.access(str(cand), os.X_OK):
+                    self.python_bin = str(cand.resolve())
+                    break
 
     def is_pid_alive(self, pid: int) -> bool:
         try:
@@ -105,6 +174,12 @@ class AVFSupervisor:
             if pid2 > 0:
                 sys.exit(0)
 
+            # Change directory to canonical production root
+            try:
+                os.chdir(str(self.canonical_root))
+            except Exception:
+                pass
+
             # Redirect standard file descriptors in daemon child
             sys.stdout.flush()
             sys.stderr.flush()
@@ -119,6 +194,12 @@ class AVFSupervisor:
         return True
 
     def _run_supervisor_loop(self):
+        # Anchor cwd to canonical production root
+        try:
+            os.chdir(str(self.canonical_root))
+        except Exception:
+            pass
+
         # Record supervisor PID
         self.supervisor_pid_file.write_text(str(os.getpid()))
 
@@ -148,12 +229,18 @@ class AVFSupervisor:
                     except Exception as e:
                         print(f"CDP forward check error: {e}", file=sys.stderr)
 
-                # Launch web worker subprocess
+                # Launch web worker subprocess pinned to canonical production root
+                worker_env = os.environ.copy()
+                worker_env["PYTHONPATH"] = str(self.canonical_root)
+                worker_env["AVF_PRODUCTION_ROOT"] = str(self.canonical_root)
+                worker_env["AVF_STATE_DIR"] = str(self.state_dir)
+
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "auto_video_factory.web"],
+                    [self.python_bin, "-m", "auto_video_factory.web"],
                     stdout=sys.stdout,
                     stderr=sys.stderr,
-                    env=os.environ.copy(),
+                    cwd=str(self.canonical_root),
+                    env=worker_env,
                 )
                 self.worker_pid_file.write_text(str(proc.pid))
 
@@ -238,9 +325,10 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "start"
     port = int(os.getenv("AVF_PORT", str(DEFAULT_PORT)))
     host = os.getenv("AVF_HOST", DEFAULT_HOST)
-    state_dir = Path(os.getenv("AVF_STATE_DIR", "output/web"))
+    canonical_root = resolve_canonical_root()
+    state_dir = Path(os.getenv("AVF_STATE_DIR", str(canonical_root / "output/web")))
 
-    supervisor = AVFSupervisor(state_dir=state_dir, port=port, host=host)
+    supervisor = AVFSupervisor(state_dir=state_dir, port=port, host=host, canonical_root=canonical_root)
 
     if cmd == "start":
         success = supervisor.start(foreground=False)

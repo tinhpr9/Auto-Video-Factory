@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from auto_video_factory.web import WebSettings
 
@@ -64,5 +65,31 @@ def test_supervisor_module_contains_daemon_and_lifecycle():
     assert hasattr(supervisor, "stop")
     assert hasattr(supervisor, "status")
     assert hasattr(supervisor, "check_health")
+    assert hasattr(supervisor, "canonical_root")
+
+
+def test_resolve_canonical_root_resolves_main_repo(tmp_path):
+    from auto_video_factory.supervisor import resolve_canonical_root
+    # Explicit env override
+    custom_root = tmp_path / "custom_prod"
+    custom_root.mkdir()
+    with patch.dict(os.environ, {"AVF_PRODUCTION_ROOT": str(custom_root)}):
+        assert resolve_canonical_root(tmp_path) == custom_root.resolve()
+
+
+def test_supervisor_anchors_cwd_and_pythonpath_to_canonical_root(tmp_path):
+    from auto_video_factory.supervisor import AVFSupervisor
+    fake_prod = tmp_path / "prod_root"
+    fake_prod.mkdir()
+    (fake_prod / "auto_video_factory").mkdir()
+    fake_state = fake_prod / "output/web"
+
+    with patch.dict(os.environ, {"AVF_PRODUCTION_ROOT": str(fake_prod)}):
+        sup = AVFSupervisor(state_dir=fake_state, port=8000)
+        assert sup.canonical_root == fake_prod.resolve()
+        assert sup.state_dir == fake_state.resolve()
+        assert sup.supervisor_pid_file == fake_state / "avf_supervisor.pid"
+        assert sup.worker_pid_file == fake_state / "avf_web.pid"
+
 
 
