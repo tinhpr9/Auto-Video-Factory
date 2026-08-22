@@ -706,5 +706,110 @@ class TestAndroidChromeProductionBackend:
             assert dev == mock_device
             assert transport.serial is None  # Never required hard-coded serial
 
+    def test_adb_disconnect_after_service_start(self):
+        """1. TEST_ADB_DISCONNECT_AFTER_SERVICE_START: Preflight automatically reconnects ADB and restores CDP."""
+        manager = AndroidCDPManager(cdp_port=9224)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []  # Disconnected
+        mock_device = MagicMock(serial="192.168.1.137:44051")
+        mock_device.forward_list.return_value = []
+        mock_client.connect.return_value = "connected to 192.168.1.137:44051"
+        mock_client.device.return_value = mock_device
+
+        with patch.object(manager, "_get_client", return_value=mock_client), \
+             patch.object(manager._wireless_transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:44051"]), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            res = manager.ensure_cdp_forward()
+            assert res is True
+            mock_client.connect.assert_called_with("192.168.1.137:44051")
+            mock_device.forward.assert_called_with("tcp:9224", "localabstract:chrome_devtools_remote")
+
+    def test_connect_endpoint_changed_after_startup(self):
+        """2. TEST_CONNECT_ENDPOINT_CHANGED_AFTER_STARTUP: Rediscover and connect to new wireless endpoint."""
+        manager = AndroidCDPManager(cdp_port=9224)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+        mock_device = MagicMock(serial="192.168.1.137:45932")
+        mock_device.forward_list.return_value = []
+        mock_client.connect.return_value = "connected to 192.168.1.137:45932"
+        mock_client.device.return_value = mock_device
+
+        with patch.object(manager, "_get_client", return_value=mock_client), \
+             patch.object(manager._wireless_transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:45932"]), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            res = manager.ensure_cdp_forward()
+            assert res is True
+            mock_client.connect.assert_called_with("192.168.1.137:45932")
+
+    def test_stale_cdp_forward(self):
+        """3. TEST_STALE_CDP_FORWARD: Detect stale forward and recreate."""
+        manager = AndroidCDPManager(cdp_port=9224)
+        mock_client = MagicMock()
+        mock_device = MagicMock(serial="192.168.1.137:44051")
+        stale_item = SimpleNamespace(local="tcp:9224", remote="localabstract:chrome_devtools_remote_old")
+        mock_device.forward_list.return_value = [stale_item]
+        mock_client.device_list.return_value = [mock_device]
+
+        with patch.object(manager, "_get_client", return_value=mock_client), \
+             patch.object(manager._wireless_transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote_new"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            res = manager.ensure_cdp_forward()
+            assert res is True
+            mock_device.forward_remove.assert_called_with("tcp:9224")
+            mock_device.forward.assert_called_with("tcp:9224", "localabstract:chrome_devtools_remote_new")
+
+    def test_chrome_socket_changed(self):
+        """4. TEST_CHROME_SOCKET_CHANGED: Discover and forward to PID-suffixed Chrome DevTools socket."""
+        manager = AndroidCDPManager(cdp_port=9224)
+        mock_client = MagicMock()
+        mock_device = MagicMock(serial="192.168.1.137:44051")
+        mock_device.forward_list.return_value = []
+        mock_client.device_list.return_value = [mock_device]
+
+        with patch.object(manager, "_get_client", return_value=mock_client), \
+             patch.object(manager._wireless_transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote_9876"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            res = manager.ensure_cdp_forward()
+            assert res is True
+            mock_device.forward.assert_called_with("tcp:9224", "localabstract:chrome_devtools_remote_9876")
+
+    def test_reconnect_failure_fails_closed(self):
+        """5. TEST_RECONNECT_FAILURE_FAILS_CLOSED: When reconnect fails, provider reports unhealthy and 0 submits occur."""
+        manager = AndroidCDPManager(cdp_port=9224)
+        mock_client = MagicMock()
+        mock_client.device_list.return_value = []
+        mock_client.connect.side_effect = RuntimeError("Connection refused")
+
+        with patch.object(manager, "_get_client", return_value=mock_client), \
+             patch.object(manager._wireless_transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_mdns_wireless_endpoints", return_value=["192.168.1.137:44051"]):
+            res = manager.ensure_cdp_forward()
+            assert res is False
+
+    def test_health_repair_is_idempotent(self):
+        """6. TEST_HEALTH_REPAIR_IS_IDEMPOTENT: Already healthy connection causes no unnecessary forward churn."""
+        manager = AndroidCDPManager(cdp_port=9224)
+        mock_client = MagicMock()
+        mock_device = MagicMock(serial="192.168.1.137:44051")
+        valid_item = SimpleNamespace(local="tcp:9224", remote="localabstract:chrome_devtools_remote")
+        mock_device.forward_list.return_value = [valid_item]
+        mock_client.device_list.return_value = [mock_device]
+
+        with patch.object(manager, "_get_client", return_value=mock_client), \
+             patch.object(manager._wireless_transport, "_get_client", return_value=mock_client), \
+             patch("auto_video_factory.flow_provider.android.discover_device_devtools_socket", return_value="chrome_devtools_remote"), \
+             patch("auto_video_factory.flow_provider.android.verify_cdp_endpoint", return_value=True):
+            res = manager.ensure_cdp_forward()
+            assert res is True
+            mock_device.forward.assert_not_called()
+            mock_device.forward_remove.assert_not_called()
+
+
 
 

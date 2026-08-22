@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Auto-Video-Factory Mobile One-Tap Service Launcher & Persistent Supervisor
-# Architecture: Android Chrome / Native Termux Chromium -> Exact CDP -> AVF Web Service (127.0.0.1:8000)
+# Architecture: Android Chrome / Native Termux Chromium -> Exact CDP -> AVF Web Service (127.0.0.1:8000/health)
 # ==============================================================================
 set -euo pipefail
 
@@ -24,6 +24,7 @@ export AVF_PORT="${AVF_PORT:-8000}"
 export FLOW_PROJECT_ID="${FLOW_PROJECT_ID:-362c6899-f74f-4118-b7d8-613ade3cd3af}"
 export FLOW_CDP_PORT="${FLOW_CDP_PORT:-9224}"
 export FLOW_CDP_URL="${FLOW_CDP_URL:-http://127.0.0.1:${FLOW_CDP_PORT}}"
+export FLOW_ANDROID_CDP="${FLOW_ANDROID_CDP:-1}"
 export AVF_BROWSER_BACKEND="${AVF_BROWSER_BACKEND:-android_chrome}"
 export AVF_FLOW_MODE="flow_balanced"
 export AVF_FLOW_MODEL="omni_flash"
